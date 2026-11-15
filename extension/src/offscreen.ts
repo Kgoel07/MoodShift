@@ -1,0 +1,253 @@
+import { AudioEngine } from './audio-engine';
+import { AudioFeaturesMeter } from './audio-features';
+import { StemStream } from './stem-stream';
+import { applyPatch, neutralEffects, type AudioEffectState } from './shared/effects';
+import { meterChannel, statusChanged, type AudioMessage, type MeterUpdate, type Reply } from './shared/messages';
+import { silentFeatures, type AudioFeatures, type CaptureSession, type CaptureStatus, type MonitorMode, type StemStatus } from './shared/types';
+
+interface LiveCapture {
+  session: CaptureSession;
+  stream: MediaStream;
+  context: AudioContext;
+  engine?: AudioEngine;
+  timer?: ReturnType<typeof setInterval>;
+  effects: AudioEffectState;
+  revision: number;
+  monitor: MonitorMode;
+  features: AudioFeatures;
+  stem: StemStatus;
+  stemStream?: StemStream;
+  stemRequest: number;
+}
+
+let live: LiveCapture | undefined;
+let problem: string | undefined;
+let pending: Promise<void> = Promise.resolve();
+const meterUpdates = new BroadcastChannel(meterChannel);
+
+function read(): CaptureStatus {
+  if (live) {
+    const { session, effects, revision, monitor, features, context, stem } = live;
+    return { phase: 'capturing', session, effects, revision, monitor, features, stem, outputPaused: context.state !== 'running' };
+  }
+  return problem ? { phase: 'error', message: problem } : { phase: 'ready' };
+}
+
+async function stop(sessionId: string, error?: string): Promise<void> {
+  if (live?.session.id !== sessionId) return;
+  const { engine, stream, context, timer, stemStream } = live;
+  live = undefined;
+  problem = error;
+  clearInterval(timer);
+  stemStream?.close();
+  engine?.disconnect();
+  stream.getTracks().forEach(track => track.stop());
+  if (context.state !== 'closed') await context.close();
+}
+
+function queue<T>(work: () => Promise<T>): Promise<T> {
+  const next = pending.then(work);
+  pending = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+function end(sessionId: string, error?: string): void {
+  void queue(async () => {
+    if (live?.session.id !== sessionId) return;
+    await stop(sessionId, error);
+    statusChanged();
+    void chrome.runtime.sendMessage({ target: 'worker', type: 'AUDIO_ENDED', sessionId })
+      .catch(() => undefined);
+  }).catch(console.error);
+}
+
+async function start(session: CaptureSession, streamId: string): Promise<void> {
+  if (live?.session.id === session.id) return;
+  if (live) throw new Error('Stop the current source before switching tabs.');
+  problem = undefined;
+  const constraints = {
+    mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId },
+  };
+  let stream: MediaStream | undefined;
+  let expired = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const media = navigator.mediaDevices.getUserMedia({ audio: constraints as MediaTrackConstraints, video: false });
+    stream = await Promise.race([
+      media.then(result => {
+        if (expired) result.getTracks().forEach(track => track.stop());
+        return result;
+      }),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          expired = true;
+          reject(new Error('Capture timed out. Click MoodShift on the source tab to retry.'));
+        }, 4000);
+      }),
+    ]);
+    clearTimeout(timeout);
+    const track = stream.getAudioTracks()[0];
+    if (track?.readyState !== 'live') throw new Error('The tab did not provide a live audio track.');
+    const context = new AudioContext({ latencyHint: 'interactive' });
+    const capture: LiveCapture = {
+      session, stream, context, effects: { ...neutralEffects }, monitor: 'modified',
+      revision: 0, features: silentFeatures, stem: { phase: 'idle', mode: 'full' }, stemRequest: 0,
+    };
+    live = capture;
+    live.engine = new AudioEngine(context, stream);
+    if (session.muted) live.engine.setMuted(true);
+    if (context.state !== 'running') {
+      await Promise.race([
+        context.resume(),
+        new Promise<void>(resolve => { timeout = setTimeout(resolve, 1500); }),
+      ]);
+    }
+    if ((context.state as AudioContextState) !== 'running') {
+      throw new Error('Chrome paused audio output. Play the source and click MoodShift on that tab to retry.');
+    }
+    if (track.readyState !== 'live') throw new Error('Capture ended during startup. Click MoodShift to retry.');
+    track.addEventListener('ended', () => end(session.id), { once: true });
+    context.addEventListener('statechange', () => {
+      if (live !== capture) return;
+      if (context.state === 'closed') end(session.id, 'Audio output closed. Click MoodShift to retry.');
+      else if (context.state !== 'running' && capture.stemStream) {
+        resetStem(capture, 'Audio output paused. Select a stem to retry after resuming.');
+      } else statusChanged();
+    });
+    const meter = new AudioFeaturesMeter(live.engine.analyser, context.sampleRate);
+    capture.timer = setInterval(() => {
+      capture.features = context.state === 'running' ? meter.sample() : silentFeatures;
+      meterUpdates.postMessage({ sessionId: session.id, features: capture.features } satisfies MeterUpdate);
+    }, 250);
+  } catch (error) {
+    stream?.getTracks().forEach(track => track.stop());
+    const message = error instanceof Error ? error.message : 'Chrome could not capture audio.';
+    await stop(session.id, message);
+    problem = message;
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function resetStem(capture: LiveCapture, message?: string): void {
+  capture.stemRequest++;
+  capture.engine?.setStemActive(false);
+  capture.stemStream?.close(message);
+  capture.stemStream = undefined;
+  capture.stem = message ? { phase: 'unavailable', mode: 'full', message } : { phase: 'idle', mode: 'full' };
+  statusChanged();
+}
+
+async function selectStem(message: Extract<AudioMessage, { type: 'SET_STEM' }>): Promise<Reply> {
+  const capture = live;
+  const engine = capture?.engine;
+  if (!capture || !engine || capture.session.id !== message.sessionId) {
+    return { ok: false, message: 'The selected tab changed.' };
+  }
+  if (message.baseRevision !== undefined && message.baseRevision !== capture.revision) {
+    return { ok: false, message: 'Effects changed while Gemini was interpreting. Submit again.' };
+  }
+  const mode = message.mode;
+  if (mode === 'full') {
+    resetStem(capture);
+    capture.monitor = 'modified';
+    engine.setMonitor('modified');
+    return { ok: true, status: read() };
+  }
+  if (mode !== 'vocals' && mode !== 'instrumental') return { ok: false, message: 'Unsupported stem mode.' };
+  if (capture.context.state !== 'running' || capture.session.muted) {
+    const detail = 'Resume or unmute the source tab before selecting a stem.';
+    resetStem(capture, detail);
+    return { ok: false, message: detail };
+  }
+  if (capture.context.sampleRate !== 44100 && capture.context.sampleRate !== 48000) {
+    const detail = `Stems require a 44.1 or 48 kHz audio context. Current rate is ${capture.context.sampleRate} Hz.`;
+    resetStem(capture, detail);
+    return { ok: false, message: detail };
+  }
+  const request = ++capture.stemRequest;
+  if (!capture.stemStream) {
+    capture.stem = { phase: 'loading', mode };
+    const stream = new StemStream(capture.context, engine, () => {
+      if (live === capture && capture.stemStream === stream && capture.stem.phase === 'loading') {
+        capture.stem = { phase: 'buffering', mode: capture.stem.mode };
+        statusChanged();
+      }
+    }, detail => {
+      if (live === capture && capture.stemStream === stream) resetStem(capture, detail);
+    });
+    capture.stemStream = stream;
+  } else if (capture.stem.phase === 'loading' || capture.stem.phase === 'buffering') {
+    capture.stem = { phase: capture.stem.phase, mode };
+  }
+  statusChanged();
+  const stream = capture.stemStream;
+  try {
+    await stream.ready;
+    if (live !== capture || request !== capture.stemRequest) {
+      return { ok: false, message: 'Stem selection changed.' };
+    }
+    if (message.baseRevision !== undefined && message.baseRevision !== capture.revision) {
+      const detail = 'Effects changed while the stem was buffering. Submit again.';
+      if (capture.stem.phase !== 'active') resetStem(capture, detail);
+      return { ok: false, message: detail };
+    }
+    stream.select(mode);
+    capture.monitor = 'modified';
+    engine.setStemActive(true);
+    engine.setMonitor('modified');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    if (live !== capture || request !== capture.stemRequest) return { ok: false, message: 'Stem selection changed.' };
+    if (capture.context.state !== 'running') {
+      const detail = 'Audio output paused while the stem was activating.';
+      resetStem(capture, detail);
+      return { ok: false, message: detail };
+    }
+    capture.stem = { phase: 'active', mode };
+    statusChanged();
+    return { ok: true, status: read() };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : 'Stem output unavailable.' };
+  }
+}
+
+chrome.runtime.onMessage.addListener((message: AudioMessage, _sender, sendResponse) => {
+  if (message.target !== 'audio') return;
+  if (message.type === 'SET_STEM') {
+    void selectStem(message).then(sendResponse, () => sendResponse({ ok: false, message: 'Stem output unavailable.' }));
+    return true;
+  }
+  void queue(async (): Promise<Reply> => {
+    if (message.type === 'START') await start(message.session, message.streamId);
+    if (message.type === 'STOP') await stop(message.sessionId);
+    if (message.type === 'APPLY_EFFECTS' || message.type === 'SET_MONITOR' || message.type === 'UPDATE_TAB') {
+      const capture = live;
+      if (!capture?.engine || capture.session.id !== message.sessionId) {
+        return { ok: false, message: 'The selected tab changed. Try again on the current source.' };
+      }
+      if (message.type === 'APPLY_EFFECTS') {
+        if (message.baseRevision !== undefined && message.baseRevision !== capture.revision) {
+          return { ok: false, message: 'Effects changed while Gemini was interpreting. Submit again to use the current settings.' };
+        }
+        const next = applyPatch(capture.effects, message.patch);
+        capture.engine.setEffects(next);
+        capture.effects = next;
+        capture.revision++;
+      } else if (message.type === 'SET_MONITOR') {
+        if (message.monitor !== 'original' && message.monitor !== 'modified') throw new Error('Invalid monitor mode.');
+        capture.engine.setMonitor(message.monitor);
+        capture.monitor = message.monitor;
+      } else {
+        if (message.title !== undefined) capture.session.title = message.title;
+        if (message.muted !== undefined) {
+          capture.engine.setMuted(message.muted);
+          capture.session.muted = message.muted;
+          if (message.muted && capture.stemStream) resetStem(capture, 'Source muted. Select a stem after unmuting.');
+        }
+      }
+    }
+    return { ok: true, status: read() };
+  }).then(sendResponse, error => sendResponse({ ok: false, message: String(error.message ?? error) }));
+  return true;
+});

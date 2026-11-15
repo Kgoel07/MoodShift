@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "116",
+  "name": "MoodShift",
+  "version": "0.1.0",
+  "description": "Live audio effects for the Chrome tab you select.",
+  "permissions": ["activeTab", "tabCapture", "offscreen", "sidePanel", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "MoodShift · Select this tab" },
+  "side_panel": { "default_path": "sidepanel.html" }
+}

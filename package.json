@@ -1,0 +1,29 @@
+{
+  "name": "moodshift",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:extension": "node scripts/build-extension.mjs",
+    "dev:server": "tsx server/src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --dir tests"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.31",
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.15.0",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "vitest": "^5.1.0"
+  }
+}

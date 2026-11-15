@@ -1,0 +1,8 @@
+node_modules/
+.npm-cache/
+.moodshift-test/
+.stem-gate/
+__pycache__/
+server/.env
+server/.env.example
+.env

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MoodShift</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <main>
+    <header class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <h1>MoodShift</h1>
+    </header>
+
+    <section class="source" aria-label="Audio source">
+      <p id="status" role="status">Ready · Click MoodShift on the tab you want to hear.</p>
+      <meter id="meter" min="0" max="1" value="0" aria-label="Input level"></meter>
+      <p id="input-status"></p>
+    </section>
+
+    <form id="interpret">
+      <label for="prompt">Describe an effect</label>
+      <textarea id="prompt" rows="3" maxlength="500" placeholder="Make it warmer and more dreamy" aria-describedby="prompt-help"></textarea>
+      <div class="form-actions">
+        <span id="prompt-help">Enter to apply · Shift+Enter for a new line</span>
+        <button id="apply" type="submit" disabled>Apply</button>
+      </div>
+    </form>
+    <p id="feedback" role="status"></p>
+
+    <section class="preset-section" aria-labelledby="preset-label">
+      <h2 id="preset-label">Presets</h2>
+      <div id="presets"></div>
+    </section>
+    <div id="monitor" role="group" aria-label="Audio monitor">
+      <button type="button" data-mode="original" aria-pressed="false">Original</button>
+      <button type="button" data-mode="modified" aria-pressed="true">Modified</button>
+    </div>
+    <section class="stem-section" aria-labelledby="stem-label">
+      <h2 id="stem-label">Stems</h2>
+      <div id="stems" role="group" aria-labelledby="stem-label">
+        <button type="button" data-stem="full" aria-pressed="true" disabled>Full mix</button>
+        <button type="button" data-stem="instrumental" aria-pressed="false" disabled>Instrumental</button>
+        <button type="button" data-stem="vocals" aria-pressed="false" disabled>Vocals</button>
+      </div>
+      <p id="stem-status" role="status"></p>
+    </section>
+    <details>
+      <summary>Effect controls</summary>
+      <fieldset id="controls" aria-label="Effect settings" disabled></fieldset>
+    </details>
+    <footer><button id="stop" type="button" disabled>Stop processing</button></footer>
+  </main>
+  <script src="sidepanel.js"></script>
+</body>
+</html>
