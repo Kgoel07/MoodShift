@@ -109,6 +109,20 @@ button:disabled { opacity: .55; cursor: default; }
 .lyrics-options input[type="number"] { width: 4.4em; }
 .lyrics-options input[type="checkbox"] { accent-color: var(--accent); }
 #lyrics-submit { margin-top: 6px; font-size: 12px; }
+#chords-status { color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+#chords-retry { margin-bottom: 8px; }
+#chords-content { margin-bottom: 8px; font-size: 12px; }
+#chord-progression { position: relative; display: flex; gap: 4px; overflow-x: auto; padding: 4px; margin-inline: -4px; }
+#chord-progression [aria-current="true"] { color: var(--accent); background: #283b3a; }
+#chord-progression [aria-pressed="true"] { border-color: var(--accent); }
+#chord-diagrams h3, #chord-diagrams h4 { font-size: 12px; margin: 5px 0; }
+#chord-diagrams p { color: var(--muted); }
+.chord-piano { width: 126px; height: 42px; display: flex; }
+.chord-piano span { width: 18px; background: var(--text); border: 1px solid var(--panel); }
+.chord-piano .black-key { width: 10px; height: 26px; margin: 0 -5px; z-index: 1; background: var(--line); }
+.chord-piano [data-played="true"] { background: var(--accent); }
+.chord-guitar { display: grid; width: 108px; grid-template-columns: repeat(6, 1fr); text-align: center; }
+.chord-guitar span:nth-child(n+7) { border: 1px solid var(--line); min-height: 16px; color: var(--accent); }
 #monitor {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

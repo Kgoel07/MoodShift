@@ -61,10 +61,20 @@
           </label>
           <label><input id="lyrics-follow" type="checkbox" checked disabled> Follow playback</label>
         </div>
-        <p id="lyrics-offset-help">Positive values delay the lyrics.</p>
+        <p id="lyrics-offset-help">Positive values delay lyrics and chord highlights.</p>
         <button id="lyrics-submit" type="submit" disabled>Search lyrics</button>
       </form>
     </section>
+    <details id="chords">
+      <summary>Chords</summary>
+      <p id="chords-status" role="status">Select a YouTube watch tab with the MoodShift icon.</p>
+      <button type="button" id="chords-retry" hidden>Retry Songle</button>
+      <div id="chords-content" hidden>
+        <p>Current Chord: <strong id="chord-current">—</strong> · Next: <strong id="chord-next">—</strong></p>
+        <div id="chord-progression" aria-label="Chord progression" tabindex="0"></div>
+        <div id="chord-diagrams" aria-label="Chord diagrams"></div>
+      </div>
+    </details>
     <details>
       <summary>Effect controls</summary>
       <fieldset id="controls" aria-label="Effect settings" disabled></fieldset>

@@ -9,7 +9,7 @@ type Correction = { title: string; artist: string };
 
 const formatOffset = (value: number) => Math.max(-10, Math.min(10, Number.isFinite(value) ? value : 0));
 
-export function mountLyrics(root: HTMLElement) {
+export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePlayback | null, offset: number) => void) {
   const form = root.querySelector<HTMLFormElement>('#lyrics-search')!;
   const title = root.querySelector<HTMLInputElement>('#lyrics-title')!;
   const artist = root.querySelector<HTMLInputElement>('#lyrics-artist')!;
@@ -54,6 +54,7 @@ export function mountLyrics(root: HTMLElement) {
 
   function highlight(): void {
     const playback = session.playback;
+    onPlayback(playback, formatOffset(offset.valueAsNumber));
     if (!playback || !lines.length) return;
     const index = activeLyric(lines, playback, formatOffset(offset.valueAsNumber));
     if (index === active) return;
@@ -132,6 +133,7 @@ export function mountLyrics(root: HTMLElement) {
     const previousVideo = session.playback?.videoId;
     const outcome = session.receive(id, update);
     if (outcome === 'ignored') return;
+    if (outcome === 'changed') onPlayback(update, formatOffset(offset.valueAsNumber));
     if (outcome === 'playback' && update) {
       highlight();
       return;
@@ -263,6 +265,7 @@ export function mountLyrics(root: HTMLElement) {
       old?.disconnect();
       source = next;
       session.setSource(next?.id);
+      onPlayback(null, formatOffset(offset.valueAsNumber));
       clearTimeout(searchTimer);
       clearLyrics();
       title.value = '';

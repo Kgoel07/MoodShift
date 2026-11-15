@@ -93,8 +93,8 @@
     search(song, retry = false) {
       if (!validSong(song)) return Promise.resolve({ kind: "invalid" });
       const key = JSON.stringify([trackKey(song.title), trackKey(song.artist), Math.round(song.duration * 10)]);
-      const pending = this.requests.get(key);
-      if (pending) return pending;
+      const pending2 = this.requests.get(key);
+      if (pending2) return pending2;
       if (this.requests.size >= 4) return Promise.resolve({ kind: "error" });
       const request = this.tail.then(async () => {
         this.state ??= this.storage?.get(storageKey).then((values) => values[storageKey]).catch(() => void 0).then((stored) => stored ?? this.empty()) ?? Promise.resolve(this.empty());
@@ -168,8 +168,88 @@
     });
   }
 
+  // extension/src/shared/chords.ts
+  var validChordVideo = (id) => typeof id === "string" && /^[\w-]{11}$/.test(id);
+  function normalizeSongle(body) {
+    const rows = body?.chords;
+    if (!Array.isArray(rows) || rows.length > 5e3) return { kind: "invalid" };
+    const events = [];
+    let previous = -1;
+    for (const row of rows) {
+      const { start, duration, name } = row ?? {};
+      if (!Number.isSafeInteger(start) || start < 0 || start <= previous || !Number.isSafeInteger(duration) || duration <= 0 || !Number.isSafeInteger(start + duration) || typeof name !== "string" || !/^(?:N|[A-G][#b♯♭]?[\w#b♯♭/()+°ø-]{0,23})$/.test(name)) {
+        return { kind: "invalid" };
+      }
+      previous = start;
+      const prev = events.at(-1);
+      if (prev) prev.endTime = Math.min(prev.endTime, start / 1e3);
+      if (name !== "N") {
+        events.push({ startTime: start / 1e3, endTime: (start + duration) / 1e3, chord: name, source: "songle" });
+      }
+    }
+    return events.length ? { kind: "found", events } : { kind: "empty" };
+  }
+
+  // extension/src/chords-provider.ts
+  var cacheKey = "songleChordCacheV1";
+  var cacheAge = 7 * 24 * 60 * 60 * 1e3;
+  var pending = /* @__PURE__ */ new Map();
+  var cacheWrite = Promise.resolve();
+  async function fetchSongle(videoId, fetcher = fetch) {
+    const endpoint = new URL("https://widget.songle.jp/api/v1/song/chord.json");
+    endpoint.searchParams.set("url", `www.youtube.com/watch?v=${videoId}`);
+    try {
+      const response = await fetcher(endpoint, { signal: AbortSignal.timeout(4500), credentials: "omit" });
+      if (response.status === 404) return { kind: "missing" };
+      if (!response.ok) return { kind: "unavailable" };
+      const json = await response.json();
+      return normalizeSongle(json);
+    } catch (error) {
+      return { kind: error instanceof SyntaxError ? "invalid" : "unavailable" };
+    }
+  }
+  async function load(videoId) {
+    try {
+      const values = await chrome.storage.local.get(cacheKey);
+      const hit = values[cacheKey]?.[videoId];
+      if (hit?.result?.kind === "found" && Date.now() - hit.savedAt < cacheAge) return hit.result;
+    } catch {
+    }
+    const result = await fetchSongle(videoId);
+    if (result.kind === "found") {
+      const write = cacheWrite.then(async () => {
+        const values = await chrome.storage.local.get(cacheKey);
+        const entries = Object.entries(values[cacheKey] ?? {}).filter(([id]) => id !== videoId);
+        await chrome.storage.local.set({
+          [cacheKey]: Object.fromEntries([...entries.slice(-15), [videoId, { savedAt: Date.now(), result }]])
+        });
+      });
+      cacheWrite = write.catch(() => void 0);
+      await cacheWrite;
+    }
+    return result;
+  }
+  function installChordLookup() {
+    chrome.runtime.onMessage.addListener((message, sender, respond) => {
+      if (message?.target !== "chords" || sender.url !== chrome.runtime.getURL("sidepanel.html")) return;
+      const videoId = message.videoId;
+      if (!validChordVideo(videoId)) {
+        respond({ kind: "invalid" });
+        return;
+      }
+      let request = pending.get(videoId);
+      if (!request) {
+        request = load(videoId).finally(() => pending.delete(videoId));
+        pending.set(videoId, request);
+      }
+      void request.then(respond, () => respond({ kind: "unavailable" }));
+      return true;
+    });
+  }
+
   // extension/src/background.ts
   installLyricsLookup();
+  installChordLookup();
   var offscreenUrl = chrome.runtime.getURL("offscreen.html");
   var creating;
   var operations = Promise.resolve();

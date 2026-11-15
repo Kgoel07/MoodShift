@@ -71,8 +71,11 @@
   function trackKey(value) {
     return value.normalize("NFKD").toLowerCase().replace(new RegExp("\\p{M}", "gu"), "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   }
+  function synchronizedPosition(playback, offset) {
+    return playback.position - offset * playback.rate;
+  }
   function activeLyric(lines, playback, offset) {
-    const position = playback.position - offset * playback.rate;
+    const position = synchronizedPosition(playback, offset);
     let start = 0;
     let end = lines.length;
     while (start < end) {
@@ -90,7 +93,7 @@
   var offsetKey = "lyricsOffset";
   var correctionKey = "lyricsCorrections";
   var formatOffset = (value) => Math.max(-10, Math.min(10, Number.isFinite(value) ? value : 0));
-  function mountLyrics(root) {
+  function mountLyrics(root, onPlayback) {
     const form2 = root.querySelector("#lyrics-search");
     const title = root.querySelector("#lyrics-title");
     const artist = root.querySelector("#lyrics-artist");
@@ -130,6 +133,7 @@
     }
     function highlight() {
       const playback = session.playback;
+      onPlayback(playback, formatOffset(offset.valueAsNumber));
       if (!playback || !lines.length) return;
       const index = activeLyric(lines, playback, formatOffset(offset.valueAsNumber));
       if (index === active) return;
@@ -217,6 +221,7 @@
       const previousVideo = session.playback?.videoId;
       const outcome = session.receive(id, update);
       if (outcome === "ignored") return;
+      if (outcome === "changed") onPlayback(update, formatOffset(offset.valueAsNumber));
       if (outcome === "playback" && update) {
         highlight();
         return;
@@ -342,6 +347,7 @@
         old?.disconnect();
         source = next;
         session.setSource(next?.id);
+        onPlayback(null, formatOffset(offset.valueAsNumber));
         clearTimeout(searchTimer);
         clearLyrics();
         title.value = "";
@@ -349,6 +355,243 @@
         refreshControls();
         status2.textContent = next ? "Waiting for a YouTube video on the selected tab\u2026" : "Select a playing YouTube tab with the MoodShift icon.";
         connect();
+      }
+    };
+  }
+
+  // extension/src/shared/chords.ts
+  var validChordVideo = (id) => typeof id === "string" && /^[\w-]{11}$/.test(id);
+  function chordPosition(events, playback, offset) {
+    if (playback.ad) return { current: -1, next: -1 };
+    const time = synchronizedPosition(playback, offset);
+    let start = 0;
+    let end = events.length;
+    while (start < end) {
+      const mid = start + end >>> 1;
+      if (events[mid].startTime <= time) start = mid + 1;
+      else end = mid;
+    }
+    return {
+      current: start > 0 && time < events[start - 1].endTime ? start - 1 : -1,
+      next: start < events.length ? start : -1
+    };
+  }
+  var notes = ["C", "C\u266F", "D", "D\u266F", "E", "F", "F\u266F", "G", "G\u266F", "A", "A\u266F", "B"];
+  var naturalNotes = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  var intervals = {
+    "": [0, 4, 7],
+    maj: [0, 4, 7],
+    m: [0, 3, 7],
+    "7": [0, 4, 7, 10],
+    maj7: [0, 4, 7, 11],
+    M7: [0, 4, 7, 11],
+    m7: [0, 3, 7, 10],
+    mM7: [0, 3, 7, 11],
+    sus2: [0, 2, 7],
+    sus4: [0, 5, 7]
+  };
+  function pitch(name) {
+    return (naturalNotes[name[0]] + (name[1] === "#" ? 1 : name[1] === "b" ? -1 : 0) + 12) % 12;
+  }
+  function pianoNotes(chord) {
+    const match = /^([A-G][#b]?)([\w]*)(?:\/([A-G][#b]?))?$/.exec(chord.replaceAll("\u266F", "#").replaceAll("\u266D", "b"));
+    if (!match || !Object.hasOwn(intervals, match[2])) return;
+    const root = pitch(match[1]);
+    const pitches = intervals[match[2]].map((interval) => (root + interval) % 12);
+    const bass = match[3] && pitch(match[3]);
+    if (typeof bass === "number") return [bass, ...pitches.filter((note) => note !== bass)].map((note) => notes[note]);
+    return pitches.map((note) => notes[note]);
+  }
+  var fingerings = {
+    C: [-1, 3, 2, 0, 1, 0],
+    D: [-1, -1, 0, 2, 3, 2],
+    E: [0, 2, 2, 1, 0, 0],
+    F: [1, 3, 3, 2, 1, 1],
+    G: [3, 2, 0, 0, 0, 3],
+    A: [-1, 0, 2, 2, 2, 0],
+    B: [-1, 2, 4, 4, 4, 2],
+    Am: [-1, 0, 2, 2, 1, 0],
+    Em: [0, 2, 2, 0, 0, 0],
+    Dm: [-1, -1, 0, 2, 3, 1],
+    Bm: [-1, 2, 4, 4, 3, 2],
+    "F#m": [2, 4, 4, 2, 2, 2],
+    Bb: [-1, 1, 3, 3, 3, 1],
+    Eb: [-1, -1, 1, 3, 4, 3],
+    Gm: [3, 5, 5, 3, 3, 3],
+    G7: [3, 2, 0, 0, 0, 1],
+    E7: [0, 2, 0, 1, 0, 0],
+    A7: [-1, 0, 2, 0, 2, 0],
+    Am7: [-1, 0, 2, 0, 1, 0],
+    Cmaj7: [-1, 3, 2, 0, 0, 0],
+    Dsus4: [-1, -1, 0, 2, 3, 3]
+  };
+  var guitarAliases = { "A#": "Bb", "D#": "Eb", Gbm: "F#m", CM7: "Cmaj7" };
+  function guitarFrets(chord) {
+    const name = chord.replaceAll("\u266F", "#").replaceAll("\u266D", "b");
+    const key = Object.hasOwn(guitarAliases, name) ? guitarAliases[name] : name;
+    return Object.hasOwn(fingerings, key) ? fingerings[key] : void 0;
+  }
+
+  // extension/src/chords-provider.ts
+  var cacheAge = 7 * 24 * 60 * 60 * 1e3;
+  var cacheWrite = Promise.resolve();
+  var ChordSession = class {
+    constructor(provider, render2) {
+      this.provider = provider;
+      this.render = render2;
+      this.revision = 0;
+      this.requested = -1;
+    }
+    setPlayback(playback) {
+      const valid = playback && validChordVideo(playback.videoId);
+      const id = valid ? playback.videoId : void 0;
+      if (id !== this.videoId) {
+        this.videoId = id;
+        this.revision++;
+        this.result = void 0;
+      }
+      if (id && playback && Number.isFinite(playback.song.duration) && playback.song.duration > 0 && !playback.ad && !this.result && this.requested !== this.revision) {
+        void this.lookup(id);
+      }
+    }
+    async lookup(id) {
+      const revision = this.revision;
+      this.requested = revision;
+      const result = await this.provider(id).catch(() => ({ kind: "unavailable" }));
+      if (revision === this.revision) {
+        this.result = result;
+        this.render();
+      }
+    }
+    retry() {
+      if (this.videoId && this.result?.kind !== "found" && this.result) {
+        this.result = void 0;
+        void this.lookup(this.videoId);
+        this.render();
+      }
+    }
+  };
+
+  // extension/src/chords-panel.ts
+  var pianoKeys = ["C", "C\u266F", "D", "D\u266F", "E", "F", "F\u266F", "G", "G\u266F", "A", "A\u266F", "B"];
+  var element = (tag, content) => {
+    const node = document.createElement(tag);
+    node.textContent = content;
+    return node;
+  };
+  function piano(chord) {
+    const notes2 = pianoNotes(chord);
+    if (!notes2) return element("p", "Diagram unavailable");
+    const keyboard = element("div", "");
+    keyboard.className = "chord-piano";
+    keyboard.setAttribute("aria-hidden", "true");
+    for (const note of pianoKeys) {
+      const key = element("span", "");
+      if (note.includes("\u266F")) key.className = "black-key";
+      if (notes2.includes(note)) key.dataset.played = "true";
+      keyboard.append(key);
+    }
+    const diagram = element("div", "");
+    diagram.append(keyboard, element("p", notes2.join(" \xB7 ")));
+    return diagram;
+  }
+  function guitar(chord) {
+    const frets = guitarFrets(chord);
+    if (!frets) return element("p", "Diagram unavailable");
+    const base = Math.max(1, Math.max(...frets) - 3);
+    const grid = element("div", "");
+    grid.className = "chord-guitar";
+    grid.setAttribute("role", "img");
+    grid.setAttribute("aria-label", `Low E to high E: ${frets.map((fret) => fret < 0 ? "muted" : fret || "open").join(", ")}`);
+    for (const fret of frets) grid.append(element("span", fret < 0 ? "\xD7" : fret === 0 ? "\u25CB" : "\u2009"));
+    for (let row = base; row < base + 4; row++) {
+      for (const fret of frets) {
+        grid.append(element("span", fret === row ? "\u25CF" : ""));
+      }
+    }
+    const diagram = element("div", "");
+    diagram.append(grid, element("p", `Fret ${base} \xB7 E A D G B E`));
+    return diagram;
+  }
+  function mountChords(root) {
+    const details = root;
+    const status2 = root.querySelector("#chords-status");
+    const content = root.querySelector("#chords-content");
+    const progression = root.querySelector("#chord-progression");
+    const current = root.querySelector("#chord-current");
+    const next = root.querySelector("#chord-next");
+    const diagrams = root.querySelector("#chord-diagrams");
+    const retry = root.querySelector("#chords-retry");
+    let playback = null;
+    let offset = 0;
+    let events;
+    let buttons = [];
+    let selected;
+    let highlighted = -1;
+    let drawn = "";
+    const session = new ChordSession((id) => chrome.runtime.sendMessage({ target: "chords", videoId: id }), render2);
+    function showDiagram(chord) {
+      if ((chord ?? "") === drawn) return;
+      drawn = chord ?? "";
+      diagrams.replaceChildren();
+      if (chord) diagrams.append(element("h3", chord), element("h4", "Guitar"), guitar(chord), element("h4", "Piano"), piano(chord));
+    }
+    function render2() {
+      const result = session.result;
+      const visible = playback && !playback.ad && Number.isFinite(playback.song.duration) && playback.song.duration > 0;
+      retry.hidden = !visible || result?.kind !== "unavailable" && result?.kind !== "invalid";
+      status2.textContent = !playback ? "Select a YouTube watch tab with the MoodShift icon." : playback.ad ? "Chords will resume after the ad." : !visible ? "A finite YouTube video is needed." : !result ? "Finding chords\u2026" : result.kind === "found" ? "Songle \xB7 Estimated chords" : result.kind === "missing" ? "Songle has no chord data for this video." : result.kind === "empty" ? "Songle returned an empty chord progression." : result.kind === "invalid" ? "Could not read the Songle response." : "Songle is unavailable.";
+      const found = result?.kind === "found" ? result.events : void 0;
+      content.hidden = !visible || !found;
+      if (found !== events) {
+        events = found;
+        selected = void 0;
+        highlighted = -1;
+        buttons = (events ?? []).map(({ chord, startTime }, index) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = chord;
+          button.setAttribute("aria-label", `${chord} at ${startTime.toFixed(2)} seconds`);
+          button.addEventListener("click", () => {
+            selected = selected === index ? void 0 : index;
+            render2();
+          });
+          return button;
+        });
+        progression.replaceChildren(...buttons);
+      }
+      if (!found || !visible || !playback) {
+        showDiagram();
+        return;
+      }
+      const position = chordPosition(found, playback, offset);
+      if (highlighted !== position.current) {
+        buttons[highlighted]?.removeAttribute("aria-current");
+        highlighted = position.current;
+        const active = buttons[highlighted];
+        if (active) {
+          active.setAttribute("aria-current", "true");
+          if (selected === void 0) progression.scrollLeft = active.offsetLeft - (progression.clientWidth - active.clientWidth) / 2;
+        }
+      }
+      current.textContent = found[position.current]?.chord ?? "\u2014";
+      next.textContent = found[position.next]?.chord ?? "\u2014";
+      const previous = progression.querySelector('[aria-pressed="true"]');
+      previous?.setAttribute("aria-pressed", "false");
+      if (selected !== void 0) buttons[selected].setAttribute("aria-pressed", "true");
+      showDiagram(found[selected ?? position.current]?.chord);
+    }
+    function sync() {
+      session.setPlayback(details.open ? playback : null);
+      if (details.open) render2();
+    }
+    details.addEventListener("toggle", sync);
+    retry.addEventListener("click", () => session.retry());
+    return {
+      setPlayback(update, timingOffset) {
+        playback = update;
+        offset = timingOffset;
+        sync();
       }
     };
   }
@@ -413,7 +656,8 @@
 
   // extension/src/sidepanel.ts
   var statusLabel = document.querySelector("#status");
-  var lyrics = mountLyrics(document.querySelector("#lyrics"));
+  var chords = mountChords(document.querySelector("#chords"));
+  var lyrics = mountLyrics(document.querySelector("#lyrics"), chords.setPlayback);
   var stopButton = document.querySelector("#stop");
   var meter = document.querySelector("#meter");
   var inputStatus = document.querySelector("#input-status");

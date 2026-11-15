@@ -1,11 +1,13 @@
 import { effectKeys, effectSpecs, neutralEffects, presets, type EffectPatch } from './shared/effects';
 import { mountLyrics } from './lyrics-panel';
+import { mountChords } from './chords-panel';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
 import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
 import { stemDelaySeconds } from './shared/stem-pcm';
 
 const statusLabel = document.querySelector<HTMLParagraphElement>('#status')!;
-const lyrics = mountLyrics(document.querySelector<HTMLElement>('#lyrics')!);
+const chords = mountChords(document.querySelector<HTMLElement>('#chords')!);
+const lyrics = mountLyrics(document.querySelector<HTMLElement>('#lyrics')!, chords.setPlayback);
 const stopButton = document.querySelector<HTMLButtonElement>('#stop')!;
 const meter = document.querySelector<HTMLMeterElement>('#meter')!;
 const inputStatus = document.querySelector<HTMLParagraphElement>('#input-status')!;

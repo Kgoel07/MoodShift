@@ -98,8 +98,12 @@ export function parseLrc(text: string): LyricLine[] {
   return merged;
 }
 
+export function synchronizedPosition(playback: YouTubePlayback, offset: number): number {
+  return playback.position - offset * playback.rate;
+}
+
 export function activeLyric(lines: readonly LyricLine[], playback: YouTubePlayback, offset: number): number {
-  const position = playback.position - offset * playback.rate;
+  const position = synchronizedPosition(playback, offset);
   let start = 0;
   let end = lines.length;
   while (start < end) {
