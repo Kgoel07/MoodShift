@@ -4,11 +4,14 @@ import { mountChords } from './chords-panel';
 import { mountSavedPresets } from './saved-presets-panel';
 import { applySavedPreset, type SavedPreset } from './saved-presets';
 import { mountPersonalization } from './personalization-panel';
+import { mountPanelTabs } from './panel-tabs';
 import { explicitPreference } from './shared/preferences';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
 import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
 import { deployment, demoCodePattern, usesCloudStems } from './shared/deployment';
 import { apiErrorDetail, apiRequest, demoCodeKey } from './api-client';
+
+mountPanelTabs();
 
 const statusLabel = document.querySelector<HTMLParagraphElement>('#status')!;
 const chords = mountChords(document.querySelector<HTMLElement>('#chords')!);
@@ -22,6 +25,8 @@ const presetGroup = document.querySelector<HTMLDivElement>('#presets')!;
 const monitorButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-mode]')];
 const stemButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-stem]')];
 const stemLabel = document.querySelector<HTMLParagraphElement>('#stem-status')!;
+document.querySelector<HTMLElement>('#stem-buffer')!.textContent =
+  `Worker · ${usesCloudStems() ? 'Cloud' : 'This device'} · ${deployment.stemDelaySeconds}s playback buffer`;
 const form = document.querySelector<HTMLFormElement>('#interpret')!;
 const promptInput = document.querySelector<HTMLTextAreaElement>('#prompt')!;
 const applyButton = document.querySelector<HTMLButtonElement>('#apply')!;
@@ -355,7 +360,7 @@ form.addEventListener('submit', async event => {
     const response = await apiRequest('/api/interpret', {
         prompt, currentEffects: effects,
         audioFeatures: session.muted || outputPaused ? silentFeatures : features,
-        personalization: personalization.context(),
+        ...personalization.context(prompt),
     }, request.controller.signal);
     if (!response.ok) {
       const detail = await apiErrorDetail(response);

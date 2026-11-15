@@ -9,6 +9,7 @@
 
   // extension/src/shared/deployment.ts
   var demoCodePattern = /^[A-Za-z0-9_-]{32,128}$/;
+  var localStemWsUrl = "ws://127.0.0.1:8788";
   var dnsName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
   function endpoint(raw, name, protocol, local, forStems) {
     const invalid = new Error(`${name} must be a ${protocol} endpoint on ${local ? "127.0.0.1" : "a specific public DNS hostname"}.`);
@@ -37,13 +38,9 @@
       local,
       false
     );
-    const stems = endpoint(
-      env.STEM_WS_URL ?? (local ? "ws://127.0.0.1:8788" : ""),
-      "STEM_WS_URL",
-      local ? "ws:" : "wss:",
-      local,
-      true
-    );
+    const stemUrl = env.STEM_WS_URL ?? (local ? localStemWsUrl : "");
+    const localStem = local || stemUrl === localStemWsUrl || stemUrl === localStemWsUrl + "/";
+    const stems = endpoint(stemUrl, "STEM_WS_URL", localStem ? "ws:" : "wss:", localStem, true);
     const delay = env.STEM_DELAY_SECONDS === void 0 ? local ? 2.8 : 4.5 : Number(env.STEM_DELAY_SECONDS);
     if (!Number.isFinite(delay) || delay < 2.8 || delay > 8 || Math.round(delay * 10) / 10 !== delay) {
       throw new Error("STEM_DELAY_SECONDS must be 2.8 to 8.0 seconds in tenths.");
@@ -56,14 +53,18 @@
     };
   }
   var deployment = typeof define_MOODSHIFT_DEPLOYMENT_default === "undefined" ? deploymentFromEnv("development", {}) : define_MOODSHIFT_DEPLOYMENT_default;
+  function usesCloudStems(config = deployment) {
+    return config.stemWsUrl.startsWith("wss://");
+  }
 
   // extension/src/api-client.ts
   function stemStartMessage(sampleRate, sessionId, config, code) {
-    if (config.mode === "production") {
-      if (new URL(config.stemWsUrl).protocol !== "wss:" || !code || !demoCodePattern.test(code)) {
-        throw new Error("Cloud stems require WSS and a private demo code.");
-      }
+    if (usesCloudStems(config)) {
+      if (!code || !demoCodePattern.test(code)) throw new Error("Cloud stems require a private demo code.");
       return { type: "start", sampleRate, sessionId, token: code };
+    }
+    if (config.mode === "production" && config.stemWsUrl !== localStemWsUrl) {
+      throw new Error("Cloud stems require WSS.");
     }
     return { type: "start", sampleRate, sessionId };
   }
@@ -86,7 +87,7 @@
       port.close();
     }
     socket.onopen = () => socket.send(JSON.stringify(hello));
-    socket.onerror = () => fail(deployment.mode === "development" ? "Start the local stem helper for this extension." : "Could not connect to the cloud stem worker.");
+    socket.onerror = () => fail(usesCloudStems() ? "Could not connect to the cloud stem worker." : "Start the local stem helper for this extension.");
     socket.onclose = (event) => fail(event.reason || "Stem helper disconnected.");
     socket.onmessage = ({ data: response }) => {
       if (typeof response === "string" && !ready) {

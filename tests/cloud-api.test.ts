@@ -113,6 +113,33 @@ describe('cloud API deployment', () => {
     });
   });
 
+  it('passes bounded installation-local preferences through shared demo without a Supermemory lookup', async () => {
+    const sdk = vi.fn<typeof fetch>();
+    const currentEffects = { ...neutralEffects, reverbMix: 0.3, bassDb: 4 };
+    const input = { ...prompt, prompt: 'Remove all bass and keep the reverb.', currentEffects };
+    const remember = ['I prefer warm bass and minimal distortion.'];
+    const upstream = vi.fn<typeof fetch>().mockImplementation(async (_url, options) => {
+      const body = JSON.parse(String(options?.body));
+      expect(body.systemInstruction.parts[0].text).toContain('Explicit instructions in prompt always take precedence');
+      expect(JSON.parse(body.contents[0].parts[0].text)).toEqual({ ...input, rememberedPreferences: remember });
+      return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{
+        text: JSON.stringify({ mode: 'patch', patch: { bassDb: -12 }, summary: 'Reduced bass.', unsupported: [] }),
+      }] } }] });
+    });
+    await serve(createApp(config, upstream, createMemory('test-memory-key', sdk), accessFromEnv(deployment, 'cloud')), async base => {
+      const endpoint = base + '/api/interpret';
+      expect((await post(endpoint, { ...input, localPreferences: remember }, 'bad')).status).toBe(401);
+      for (const invalid of [Array(5).fill('Warm bass'), ['x'.repeat(241)], ['First\nSecond']]) {
+        expect((await post(endpoint, { ...input, localPreferences: invalid })).status).toBe(400);
+      }
+      const response = await post(endpoint, { ...input, localPreferences: remember });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ patch: { bassDb: -12 } });
+      expect(sdk).not.toHaveBeenCalled();
+      expect(upstream).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('enforces a bounded authenticated per-instance quota before upstream requests', async () => {
     const upstream = gemini();
     await serve(createApp(config, upstream, undefined, accessFromEnv(deployment, 'cloud')), async base => {

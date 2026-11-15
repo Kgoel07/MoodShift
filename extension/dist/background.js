@@ -1,11 +1,75 @@
 "use strict";
 (() => {
+  // <define:__MOODSHIFT_DEPLOYMENT__>
+  var define_MOODSHIFT_DEPLOYMENT_default = { mode: "development", apiBaseUrl: "http://127.0.0.1:8787", stemWsUrl: "ws://127.0.0.1:8788", stemDelaySeconds: 2.8 };
+
   // extension/src/shared/messages.ts
   function toAudio(command) {
     return chrome.runtime.sendMessage({ ...command, target: "audio" });
   }
   function statusChanged() {
     void chrome.runtime.sendMessage({ target: "panel", type: "STATUS_CHANGED" }).catch(() => void 0);
+  }
+
+  // extension/src/shared/deployment.ts
+  var demoCodePattern = /^[A-Za-z0-9_-]{32,128}$/;
+  var localStemWsUrl = "ws://127.0.0.1:8788";
+  var dnsName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+  function endpoint(raw, name, protocol, local, forStems) {
+    const invalid = new Error(`${name} must be a ${protocol} endpoint on ${local ? "127.0.0.1" : "a specific public DNS hostname"}.`);
+    let url;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw invalid;
+    }
+    if (raw !== raw.trim() || !raw.startsWith(protocol + "//") || url.protocol !== protocol || url.username || url.password || /[\s?#\\@]/.test(raw) || url.pathname !== "/" && !(forStems && !local && url.pathname === "/stem")) throw invalid;
+    if (raw !== url.origin && raw !== url.href) throw invalid;
+    if (local) {
+      if (url.hostname !== "127.0.0.1" || (forStems ? Number(url.port) < 1024 : url.port !== "8787")) throw invalid;
+    } else if (url.port || !dnsName.test(url.hostname) || /\.(local|localhost|internal)$/.test(url.hostname)) {
+      throw invalid;
+    }
+    return url;
+  }
+  function deploymentFromEnv(mode, env) {
+    if (mode !== "development" && mode !== "production") throw new Error("Build mode must be development or production.");
+    const local = mode === "development";
+    const api = endpoint(
+      env.API_BASE_URL ?? (local ? "http://127.0.0.1:8787" : ""),
+      "API_BASE_URL",
+      local ? "http:" : "https:",
+      local,
+      false
+    );
+    const stemUrl = env.STEM_WS_URL ?? (local ? localStemWsUrl : "");
+    const localStem = local || stemUrl === localStemWsUrl || stemUrl === localStemWsUrl + "/";
+    const stems = endpoint(stemUrl, "STEM_WS_URL", localStem ? "ws:" : "wss:", localStem, true);
+    const delay = env.STEM_DELAY_SECONDS === void 0 ? local ? 2.8 : 4.5 : Number(env.STEM_DELAY_SECONDS);
+    if (!Number.isFinite(delay) || delay < 2.8 || delay > 8 || Math.round(delay * 10) / 10 !== delay) {
+      throw new Error("STEM_DELAY_SECONDS must be 2.8 to 8.0 seconds in tenths.");
+    }
+    return {
+      mode,
+      apiBaseUrl: api.origin,
+      stemWsUrl: stems.origin + (stems.pathname === "/" ? "" : stems.pathname),
+      stemDelaySeconds: delay
+    };
+  }
+  var deployment = typeof define_MOODSHIFT_DEPLOYMENT_default === "undefined" ? deploymentFromEnv("development", {}) : define_MOODSHIFT_DEPLOYMENT_default;
+  function usesCloudStems(config = deployment) {
+    return config.stemWsUrl.startsWith("wss://");
+  }
+
+  // extension/src/api-client.ts
+  var demoCodeKey = "moodshiftDemoAccessCode";
+  async function cloudDemoCode(config = deployment) {
+    if (config.mode !== "production") return;
+    const code = (await chrome.storage.local.get(demoCodeKey))[demoCodeKey];
+    if (typeof code !== "string" || !demoCodePattern.test(code)) {
+      throw new Error("Enter the private demo access code in MoodShift settings.");
+    }
+    return code;
   }
 
   // extension/src/shared/lyrics.ts
@@ -126,11 +190,11 @@
       return { cache: [], retryAt: 0, lastFinished: 0 };
     }
     async fetchLyrics(song, state) {
-      const endpoint = new URL("https://lrclib.net/api/search");
-      endpoint.searchParams.set("track_name", song.title.trim());
-      endpoint.searchParams.set("artist_name", song.artist.trim());
+      const endpoint2 = new URL("https://lrclib.net/api/search");
+      endpoint2.searchParams.set("track_name", song.title.trim());
+      endpoint2.searchParams.set("artist_name", song.artist.trim());
       try {
-        const response = await this.fetcher(endpoint, {
+        const response = await this.fetcher(endpoint2, {
           headers: { "X-User-Agent": this.client, Accept: "application/json" },
           credentials: "omit",
           redirect: "error",
@@ -196,10 +260,10 @@
   var pending = /* @__PURE__ */ new Map();
   var cacheWrite = Promise.resolve();
   async function fetchSongle(videoId, fetcher = fetch) {
-    const endpoint = new URL("https://widget.songle.jp/api/v1/song/chord.json");
-    endpoint.searchParams.set("url", `www.youtube.com/watch?v=${videoId}`);
+    const endpoint2 = new URL("https://widget.songle.jp/api/v1/song/chord.json");
+    endpoint2.searchParams.set("url", `www.youtube.com/watch?v=${videoId}`);
     try {
-      const response = await fetcher(endpoint, { signal: AbortSignal.timeout(4500), credentials: "omit" });
+      const response = await fetcher(endpoint2, { signal: AbortSignal.timeout(4500), credentials: "omit" });
       if (response.status === 404) return { kind: "missing" };
       if (!response.ok) return { kind: "unavailable" };
       const json = await response.json();
@@ -374,6 +438,17 @@
   });
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.target !== "worker") return;
+    if (message.type === "GET_STEM_CODE") {
+      if (!usesCloudStems() || sender.id !== chrome.runtime.id || sender.url !== offscreenUrl) {
+        sendResponse({ ok: false, message: "Cloud stem authentication is unavailable." });
+        return;
+      }
+      void cloudDemoCode().then(
+        (code) => sendResponse(code ? { ok: true, code } : { ok: false, message: "Cloud stem authentication is unavailable." }),
+        (error) => sendResponse({ ok: false, message: error instanceof Error ? error.message : "Could not read the private demo code." })
+      );
+      return true;
+    }
     if (message.type === "AUDIO_ENDED") {
       if (sender.url === offscreenUrl) void queue(async () => remember(await audioStatus())).catch(console.error);
       return;

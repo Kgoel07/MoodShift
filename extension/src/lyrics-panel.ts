@@ -46,11 +46,13 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
   }
 
   function centerActive(): void {
-    if (!follow.checked) return;
+    if (!follow.checked || !viewport.clientHeight) return;
     const line = lineElements[active];
     if (line?.hidden) return;
     viewport.scrollTop = line ? line.offsetTop - (viewport.clientHeight - line.clientHeight) / 2 : 0;
   }
+
+  new ResizeObserver(centerActive).observe(viewport);
 
   function highlight(): void {
     const playback = session.playback;

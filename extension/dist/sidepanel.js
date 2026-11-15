@@ -137,11 +137,12 @@
       follow.disabled = true;
     }
     function centerActive() {
-      if (!follow.checked) return;
+      if (!follow.checked || !viewport.clientHeight) return;
       const line = lineElements[active];
       if (line?.hidden) return;
       viewport.scrollTop = line ? line.offsetTop - (viewport.clientHeight - line.clientHeight) / 2 : 0;
     }
+    new ResizeObserver(centerActive).observe(viewport);
     function highlight() {
       const playback = session.playback;
       onPlayback(playback, formatOffset(offset.valueAsNumber));
@@ -583,7 +584,7 @@
         const active = buttons[highlighted];
         if (active) {
           active.setAttribute("aria-current", "true");
-          if (selected === void 0) progression.scrollLeft = active.offsetLeft - (progression.clientWidth - active.clientWidth) / 2;
+          centerActive();
         }
       }
       current.textContent = found[position.current]?.chord ?? "\u2014";
@@ -593,6 +594,13 @@
       if (selected !== void 0) buttons[selected].setAttribute("aria-pressed", "true");
       showDiagram(found[selected ?? position.current]?.chord);
     }
+    function centerActive() {
+      const active = buttons[highlighted];
+      if (active && selected === void 0 && progression.clientWidth) {
+        progression.scrollLeft = active.offsetLeft - (progression.clientWidth - active.clientWidth) / 2;
+      }
+    }
+    new ResizeObserver(centerActive).observe(progression);
     function sync() {
       session.setPlayback(details2.open ? playback : null);
       if (details2.open) render2();
@@ -863,7 +871,19 @@
 
   // extension/src/shared/preferences.ts
   var preferenceLimit = 240;
+  var preferenceContextLimit = 4;
   var installationIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  var preferenceTextPattern = /^[^\u0000-\u001f\u007f]+$/;
+  var commonWords = /* @__PURE__ */ new Set(["about", "like", "make", "more", "less", "much", "prefer", "please", "some", "song", "sound", "that", "this", "want", "with", "would"]);
+  function terms(text) {
+    return [...new Set(text.toLowerCase().match(/[a-z]{3,}/g) ?? [])].filter((word) => !commonWords.has(word));
+  }
+  function relevantPreferences(prompt, newestFirst) {
+    const keywords = new Set(terms(prompt));
+    const ranked = newestFirst.map((text) => ({ text, matches: terms(text).filter((word) => keywords.has(word)).length })).sort((a, b) => b.matches - a.matches);
+    const relevant = ranked[0]?.matches ? ranked.filter((item) => item.matches > 0) : ranked;
+    return relevant.slice(0, preferenceContextLimit).map((item) => item.text);
+  }
   function explicitPreference(prompt) {
     const text = prompt.trim();
     if (/^remember that\s+\S/i.test(text)) return text.replace(/^remember that\s+/i, "");
@@ -872,6 +892,7 @@
 
   // extension/src/shared/deployment.ts
   var demoCodePattern = /^[A-Za-z0-9_-]{32,128}$/;
+  var localStemWsUrl = "ws://127.0.0.1:8788";
   var dnsName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
   function endpoint(raw, name, protocol, local, forStems) {
     const invalid = new Error(`${name} must be a ${protocol} endpoint on ${local ? "127.0.0.1" : "a specific public DNS hostname"}.`);
@@ -900,13 +921,9 @@
       local,
       false
     );
-    const stems = endpoint(
-      env.STEM_WS_URL ?? (local ? "ws://127.0.0.1:8788" : ""),
-      "STEM_WS_URL",
-      local ? "ws:" : "wss:",
-      local,
-      true
-    );
+    const stemUrl = env.STEM_WS_URL ?? (local ? localStemWsUrl : "");
+    const localStem = local || stemUrl === localStemWsUrl || stemUrl === localStemWsUrl + "/";
+    const stems = endpoint(stemUrl, "STEM_WS_URL", localStem ? "ws:" : "wss:", localStem, true);
     const delay = env.STEM_DELAY_SECONDS === void 0 ? local ? 2.8 : 4.5 : Number(env.STEM_DELAY_SECONDS);
     if (!Number.isFinite(delay) || delay < 2.8 || delay > 8 || Math.round(delay * 10) / 10 !== delay) {
       throw new Error("STEM_DELAY_SECONDS must be 2.8 to 8.0 seconds in tenths.");
@@ -919,6 +936,9 @@
     };
   }
   var deployment = typeof define_MOODSHIFT_DEPLOYMENT_default === "undefined" ? deploymentFromEnv("development", {}) : define_MOODSHIFT_DEPLOYMENT_default;
+  function usesCloudStems(config = deployment) {
+    return config.stemWsUrl.startsWith("wss://");
+  }
 
   // extension/src/api-client.ts
   var demoCodeKey = "moodshiftDemoAccessCode";
@@ -945,20 +965,73 @@
       redirect: "error"
     });
   }
+  async function apiErrorDetail(response, config = deployment) {
+    const body = await response.json().catch(() => void 0);
+    if (typeof body?.error === "string") return body.error.slice(0, 240);
+    if (config.mode === "development") return `Check the local proxy (HTTP ${response.status}).`;
+    if (response.status === 401 && body?.protection != null) {
+      return "Vercel Deployment Protection blocked the request. Use the production domain where /health works without a Vercel login.";
+    }
+    return `Cloud API returned HTTP ${response.status}. Check /health on the configured production domain.`;
+  }
+
+  // extension/src/local-preferences.ts
+  var localPreferencesKey = "moodshiftSoundPreferences";
+  var maxPreferences = 30;
+  function parseLocalPreferences(value) {
+    if (value === void 0) return [];
+    if (!Array.isArray(value) || value.length > maxPreferences || !value.every((row) => typeof row?.id === "string" && installationIdPattern.test(row.id) && typeof row.text === "string" && row.text.length <= preferenceLimit && preferenceTextPattern.test(row.text) && row.text.trim() === row.text)) {
+      throw new Error("Could not read saved local preferences.");
+    }
+    return value;
+  }
+  function soundPreferenceText(text) {
+    const trimmed = text.trim();
+    if (!preferenceTextPattern.test(trimmed) || trimmed.length > preferenceLimit) {
+      throw new Error(`Enter a single sound preference up to ${preferenceLimit} characters.`);
+    }
+    return trimmed;
+  }
+  async function loadLocalPreferences() {
+    return parseLocalPreferences((await chrome.storage.local.get(localPreferencesKey))[localPreferencesKey]);
+  }
+  async function editLocalPreference(edit) {
+    return navigator.locks.request(localPreferencesKey, async () => {
+      const preferences = await loadLocalPreferences();
+      const index = edit.id === void 0 ? -1 : preferences.findIndex((row) => row.id === edit.id);
+      if (edit.id !== void 0 && index < 0) throw new Error("This preference is no longer available.");
+      if ("remove" in edit) preferences.splice(index, 1);
+      else {
+        const text = soundPreferenceText(edit.text);
+        if (preferences.some((row) => row.id !== edit.id && row.text.toLowerCase() === text.toLowerCase())) {
+          throw new Error("This sound preference is already saved.");
+        }
+        if (index >= 0) preferences.splice(index, 1);
+        if (preferences.length >= maxPreferences) throw new Error(`Delete a preference before saving more than ${maxPreferences}.`);
+        preferences.unshift({ id: edit.id ?? crypto.randomUUID(), text });
+      }
+      await chrome.storage.local.set({ [localPreferencesKey]: preferences });
+      return preferences;
+    });
+  }
 
   // extension/src/personalization-panel.ts
   var storageKey = "moodshiftPersonalization";
   function parseSettings(value) {
     const settings = value;
     if (typeof settings?.installationId === "string" && installationIdPattern.test(settings.installationId)) {
-      return { installationId: settings.installationId, enabled: settings.enabled === true };
+      return {
+        installationId: settings.installationId,
+        enabled: settings.enabled === true,
+        useSupermemory: typeof settings.useSupermemory === "boolean" ? settings.useSupermemory : settings.enabled === true
+      };
     }
   }
-  async function updateSettings(enabled) {
+  async function updateSettings(changes = {}) {
     return navigator.locks.request(storageKey, async () => {
       const stored = parseSettings((await chrome.storage.local.get(storageKey))[storageKey]);
-      if (stored && (enabled === void 0 || stored.enabled === enabled)) return stored;
-      const next = { installationId: stored?.installationId ?? crypto.randomUUID(), enabled: enabled ?? false };
+      const next = { installationId: crypto.randomUUID(), enabled: false, useSupermemory: false, ...stored, ...changes };
+      if (stored && next.enabled === stored.enabled && next.useSupermemory === stored.useSupermemory) return stored;
       await chrome.storage.local.set({ [storageKey]: next });
       return next;
     });
@@ -969,49 +1042,106 @@
     const form2 = query("#memory-form");
     const field = query("#memory-preference");
     const save = query("#memory-save");
+    const cancel = query("#memory-cancel-edit");
+    const localList = query("#memory-local-list");
+    const remoteEnabled = query("#memory-remote-enabled");
+    const remoteSave = query("#memory-remote-save");
+    const remoteField = query("#memory-remote-preference");
+    const remoteForm = query("#memory-remote-form");
     const view = query("#memory-view");
     const clear = query("#memory-clear");
     const list = query("#memory-list");
     const state = query("#memory-status");
+    const remoteState = query("#memory-remote-status");
     let settings;
     let ready = false;
     let busy = false;
     let clearing = false;
+    let preferences = [];
+    let editingId;
     function controls2() {
       enable.disabled = !ready || busy;
-      field.disabled = !settings?.enabled || busy;
+      field.disabled = !ready || busy;
       save.disabled = field.disabled || !field.value.trim();
+      cancel.disabled = busy;
+      remoteEnabled.disabled = !ready || busy;
+      remoteField.disabled = !settings?.enabled || !settings.useSupermemory || busy;
+      remoteSave.disabled = remoteField.disabled || !remoteField.value.trim();
       view.disabled = !ready || busy;
       clear.disabled = !ready || busy;
+      for (const button of localList.querySelectorAll("button")) button.disabled = busy;
     }
     function setSettings(next) {
-      const changed = !!settings?.enabled !== !!next?.enabled || next?.enabled && settings?.installationId !== next?.installationId;
+      const changed = !!settings?.enabled !== !!next?.enabled || next?.enabled && (settings?.installationId !== next.installationId || settings.useSupermemory !== next.useSupermemory);
       settings = next;
       ready = true;
       enable.checked = next?.enabled === true;
+      remoteEnabled.checked = next?.useSupermemory === true;
       controls2();
       if (changed) onChange();
     }
-    function showPreferences(preferences) {
-      list.replaceChildren(...preferences.map((text) => {
+    function setEditing(id, text = "") {
+      editingId = id;
+      field.value = text;
+      save.textContent = id ? "Save changes" : "Save locally";
+      cancel.hidden = !id;
+      controls2();
+    }
+    function showLocal(next) {
+      if (JSON.stringify(preferences) === JSON.stringify(next)) return;
+      preferences = next;
+      localList.replaceChildren(...next.map(({ id, text }) => {
+        const row = document.createElement("li");
+        const label = document.createElement("span");
+        label.textContent = text;
+        const actions = document.createElement("div");
+        actions.className = "saved-preset-actions";
+        for (const action of ["Edit", "Delete"]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = action;
+          button.setAttribute("aria-label", `${action} preference: ${text}`);
+          button.addEventListener("click", () => {
+            if (action === "Edit") {
+              setEditing(id, text);
+              field.focus();
+            } else {
+              void run(async () => {
+                showLocal(await editLocalPreference({ id, remove: true }));
+                if (editingId === id) setEditing();
+                return "Local preference deleted.";
+              }).then(() => field.focus());
+            }
+          });
+          actions.append(button);
+        }
+        row.append(label, actions);
+        return row;
+      }));
+      localList.hidden = !next.length;
+      controls2();
+      if (settings?.enabled) onChange();
+    }
+    function showPreferences(preferences2) {
+      list.replaceChildren(...preferences2.map((text) => {
         const node = document.createElement("li");
         node.textContent = text;
         return node;
       }));
-      list.hidden = !preferences.length;
+      list.hidden = !preferences2.length;
     }
-    async function run(work) {
+    async function run(work, status2 = state) {
       if (busy) return "Wait for the current preference action to finish.";
       busy = true;
       controls2();
-      state.textContent = "Working\u2026";
+      status2.textContent = "Working\u2026";
       try {
         const message = await work();
-        state.textContent = message;
+        status2.textContent = message;
         return message;
       } catch (error) {
-        const message = error instanceof TypeError ? deployment.mode === "development" ? "Could not reach the local proxy." : "Could not reach the configured cloud API." : error instanceof Error ? error.message : "Could not complete the preference action.";
-        state.textContent = message;
+        const message = error instanceof TypeError && status2 === remoteState ? deployment.mode === "development" ? "Could not reach the local proxy." : "Could not reach the configured cloud API." : error instanceof Error ? error.message : "Could not complete the preference action.";
+        status2.textContent = message;
         return message;
       } finally {
         busy = false;
@@ -1020,25 +1150,18 @@
     }
     async function remote(action) {
       const latest = await updateSettings();
-      if (action.action === "remember" && !latest.enabled) throw new Error("Enable personalization to remember a preference.");
-      const response = await apiRequest("/api/memory", { ...action, installationId: latest.installationId }, AbortSignal.timeout(6500));
-      const result = await response.json();
-      if (!response.ok) {
-        throw new Error(typeof result?.error === "string" ? result.error.slice(0, 240) : "Supermemory could not complete the request.");
+      if (action.action === "remember" && (!latest.enabled || !latest.useSupermemory)) {
+        throw new Error("Enable personalization and Supermemory to save a cloud preference.");
       }
-      return result;
+      const response = await apiRequest("/api/memory", { ...action, installationId: latest.installationId }, AbortSignal.timeout(6500));
+      if (!response.ok) throw new Error(await apiErrorDetail(response));
+      return response.json();
     }
-    function remember(preference) {
+    function remember(preference, id) {
       return run(async () => {
-        if (!settings?.enabled) throw new Error("Enable personalization to remember a preference.");
-        const text = preference.trim();
-        if (!text || text.length > preferenceLimit || /[\u0000-\u001f\u007f]/.test(text)) {
-          throw new Error(`Enter a single sound preference up to ${preferenceLimit} characters.`);
-        }
-        const reply = await remote({ action: "remember", preference: text, enabled: true });
-        if (reply?.remembered !== true) throw new Error("Supermemory did not confirm the preference.");
-        if (field.value.trim() === text) field.value = "";
-        return reply.processing ? "Preference sent to Supermemory. Indexing may take a moment." : "Preference saved to Supermemory.";
+        showLocal(await editLocalPreference({ id, text: preference }));
+        if (editingId === id && field.value.trim() === preference.trim()) setEditing();
+        return id ? "Local preference updated." : "Preference saved on this device.";
       });
     }
     enable.addEventListener("change", () => {
@@ -1046,18 +1169,46 @@
       if (!enabled && settings) setSettings({ ...settings, enabled: false });
       void run(async () => {
         try {
-          setSettings(await updateSettings(enabled));
+          setSettings(await updateSettings({ enabled }));
         } catch {
           setSettings(parseSettings((await chrome.storage.local.get(storageKey))[storageKey]));
           throw new Error("Could not save the personalization setting.");
         }
-        return enabled ? "Personalization enabled." : "Personalization disabled. Use Clear remote preferences to remove stored data.";
+        return enabled ? "Personalization enabled." : "Personalization disabled. Saved preferences are kept.";
       });
     });
     field.addEventListener("input", controls2);
     form2.addEventListener("submit", (event) => {
       event.preventDefault();
-      if (!save.disabled) void remember(field.value);
+      if (!save.disabled) void remember(field.value, editingId);
+    });
+    cancel.addEventListener("click", () => {
+      setEditing();
+      field.focus();
+    });
+    remoteEnabled.addEventListener("change", () => {
+      const useSupermemory = remoteEnabled.checked;
+      void run(async () => {
+        try {
+          setSettings(await updateSettings({ useSupermemory }));
+        } catch (error) {
+          remoteEnabled.checked = settings?.useSupermemory === true;
+          throw error;
+        }
+        return useSupermemory ? "Supermemory enabled for compatible backends." : "Supermemory disabled. Remote preferences are kept.";
+      }, remoteState);
+    });
+    remoteField.addEventListener("input", controls2);
+    remoteForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (remoteSave.disabled) return;
+      void run(async () => {
+        const text = soundPreferenceText(remoteField.value);
+        const reply = await remote({ action: "remember", preference: text, enabled: true });
+        if (reply?.remembered !== true) throw new Error("Supermemory did not confirm the preference.");
+        remoteField.value = "";
+        return reply.processing ? "Preference sent to Supermemory. Indexing may take a moment." : "Preference saved to Supermemory.";
+      }, remoteState);
     });
     view.addEventListener("click", () => void run(async () => {
       showPreferences([]);
@@ -1067,7 +1218,7 @@
       }
       showPreferences(reply.preferences.slice(0, 30));
       return reply.hasMore ? "Showing up to 30 indexed preferences." : reply.preferences.length ? "Preferences from Supermemory." : "No indexed preferences found.";
-    }));
+    }, remoteState));
     clear.addEventListener("click", () => void run(async () => {
       clearing = true;
       onChange();
@@ -1079,19 +1230,70 @@
       } finally {
         clearing = false;
       }
-    }));
+    }, remoteState));
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === "local" && changes[storageKey]) setSettings(parseSettings(changes[storageKey].newValue));
+      if (area !== "local") return;
+      if (changes[storageKey]) setSettings(parseSettings(changes[storageKey].newValue));
+      if (changes[localPreferencesKey]) {
+        try {
+          showLocal(parseLocalPreferences(changes[localPreferencesKey].newValue));
+        } catch {
+          state.textContent = "Could not read saved local preferences.";
+        }
+      }
     });
     void chrome.storage.local.get(storageKey).then((values) => setSettings(parseSettings(values[storageKey]))).catch(() => {
       state.textContent = "Could not read personalization settings.";
     });
+    void loadLocalPreferences().then(showLocal).catch(() => {
+      state.textContent = "Could not read saved local preferences.";
+    });
     return {
       remember,
-      context() {
-        return settings?.enabled && !clearing ? { enabled: true, installationId: settings.installationId } : void 0;
+      context(prompt) {
+        if (!settings?.enabled) return {};
+        const localPreferences = relevantPreferences(prompt, preferences.map((row) => row.text));
+        return {
+          localPreferences: localPreferences.length ? localPreferences : void 0,
+          personalization: settings.useSupermemory && !clearing ? { enabled: true, installationId: settings.installationId } : void 0
+        };
       }
     };
+  }
+
+  // extension/src/panel-tabs.ts
+  var tabKey = "moodshiftPanelTab";
+  function mountPanelTabs() {
+    const names = ["home", "advanced"];
+    const tabs = names.map((name) => document.querySelector(`#${name}-tab`));
+    const panels = names.map((name) => document.querySelector(`#${name}-panel`));
+    const sharedControls = [
+      { element: document.querySelector("#preset-library"), slots: names.map((name) => document.querySelector(`#${name}-presets`)) },
+      { element: document.querySelector("#stem-controls"), slots: names.map((name) => document.querySelector(`#${name}-stems`)) }
+    ];
+    function select(index, focus = false) {
+      tabs.forEach((tab, current) => {
+        const selected = current === index;
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        panels[current].hidden = !selected;
+      });
+      for (const { element: element2, slots } of sharedControls) {
+        if (element2.parentElement !== slots[index]) slots[index].append(element2);
+      }
+      localStorage.setItem(tabKey, names[index]);
+      if (focus) tabs[index].focus();
+    }
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => select(index));
+      tab.addEventListener("keydown", (event) => {
+        const next = { ArrowLeft: 1 - index, ArrowRight: 1 - index, Home: 0, End: 1 }[event.key];
+        if (next === void 0) return;
+        event.preventDefault();
+        select(next, true);
+      });
+    });
+    select(localStorage.getItem(tabKey) === "advanced" ? 1 : 0);
   }
 
   // extension/src/shared/types.ts
@@ -1144,6 +1346,7 @@
   }
 
   // extension/src/sidepanel.ts
+  mountPanelTabs();
   var statusLabel = document.querySelector("#status");
   var chords = mountChords(document.querySelector("#chords"));
   var lyrics = mountLyrics(document.querySelector("#lyrics"), chords.setPlayback);
@@ -1156,6 +1359,7 @@
   var monitorButtons = [...document.querySelectorAll("[data-mode]")];
   var stemButtons = [...document.querySelectorAll("[data-stem]")];
   var stemLabel = document.querySelector("#stem-status");
+  document.querySelector("#stem-buffer").textContent = `Worker \xB7 ${usesCloudStems() ? "Cloud" : "This device"} \xB7 ${deployment.stemDelaySeconds}s playback buffer`;
   var form = document.querySelector("#interpret");
   var promptInput = document.querySelector("#prompt");
   var applyButton = document.querySelector("#apply");
@@ -1177,7 +1381,7 @@
   });
   if (deployment.mode === "production") {
     document.querySelector("#cloud-settings").hidden = false;
-    document.querySelector("#cloud-stem-note").hidden = false;
+    document.querySelector("#cloud-stem-note").hidden = !usesCloudStems();
     const settings = document.querySelector("#cloud-code-form");
     const field = document.querySelector("#cloud-code");
     const result = document.querySelector("#cloud-code-status");
@@ -1478,16 +1682,16 @@
         prompt,
         currentEffects: effects,
         audioFeatures: session.muted || outputPaused ? silentFeatures : features,
-        personalization: personalization.context()
+        ...personalization.context(prompt)
       }, request.controller.signal);
-      const body = await response.json();
-      if (interpretation?.id !== request.id) return;
       if (!response.ok) {
-        const detail2 = typeof body?.error === "string" ? body.error.slice(0, 240) : "Check the local proxy.";
+        const detail2 = await apiErrorDetail(response);
         if (response.status === 504) throw new Error("Gemini timed out. Try again.");
         if (response.status >= 500 || response.status === 429) throw new GeminiUnavailable(detail2);
         throw new Error(detail2);
       }
+      const body = await response.json();
+      if (interpretation?.id !== request.id) return;
       const result = parseInterpretation(body, effects);
       const detail = [result.summary, result.unsupported.length ? `Unsupported \xB7 ${result.unsupported.join(", ")}` : ""].filter(Boolean).join(" ");
       if (result.mode === "unsupported") {

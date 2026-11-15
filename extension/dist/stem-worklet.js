@@ -9,6 +9,7 @@
   var stereoFrameBytes = 8;
 
   // extension/src/shared/deployment.ts
+  var localStemWsUrl = "ws://127.0.0.1:8788";
   var dnsName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
   function endpoint(raw, name, protocol, local, forStems) {
     const invalid = new Error(`${name} must be a ${protocol} endpoint on ${local ? "127.0.0.1" : "a specific public DNS hostname"}.`);
@@ -37,13 +38,9 @@
       local,
       false
     );
-    const stems = endpoint(
-      env.STEM_WS_URL ?? (local ? "ws://127.0.0.1:8788" : ""),
-      "STEM_WS_URL",
-      local ? "ws:" : "wss:",
-      local,
-      true
-    );
+    const stemUrl = env.STEM_WS_URL ?? (local ? localStemWsUrl : "");
+    const localStem = local || stemUrl === localStemWsUrl || stemUrl === localStemWsUrl + "/";
+    const stems = endpoint(stemUrl, "STEM_WS_URL", localStem ? "ws:" : "wss:", localStem, true);
     const delay = env.STEM_DELAY_SECONDS === void 0 ? local ? 2.8 : 4.5 : Number(env.STEM_DELAY_SECONDS);
     if (!Number.isFinite(delay) || delay < 2.8 || delay > 8 || Math.round(delay * 10) / 10 !== delay) {
       throw new Error("STEM_DELAY_SECONDS must be 2.8 to 8.0 seconds in tenths.");

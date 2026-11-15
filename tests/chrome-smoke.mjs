@@ -193,6 +193,8 @@ try {
     assert.ok(capture.status.features.rms > 0.03, 'local tone reached the real analyser');
     const panel = await find(t => t.url === origin + '/sidepanel.html', 'side panel');
     const view = await attach(panel.targetId);
+    const selectPanel = name => evaluate(view, `document.querySelector('#${name}-tab').click()`);
+    assert.equal(await evaluate(view, "document.querySelector('#advanced-panel').hidden"), true);
     if (cloudBuild) {
       const manifest = await evaluate(view, 'chrome.runtime.getManifest()');
       const stemOrigin = new URL(cloudConfig.STEM_WS_URL).origin;
@@ -201,6 +203,7 @@ try {
       assert.equal(stemOrigin === 'ws://127.0.0.1:8788', localStemsWithCloudApi);
       assert.equal(await evaluate(view, "document.querySelector('#cloud-stem-note').hidden"), localStemsWithCloudApi);
       assert.ok(!manifest.host_permissions.includes('http://127.0.0.1/*'));
+      await selectPanel('advanced');
       await evaluate(view, `document.querySelector('#cloud-settings').open = true;
         document.querySelector('#cloud-code').value = ${JSON.stringify(smokeCode)};
         document.querySelector('#cloud-code-form').requestSubmit()`);
@@ -215,6 +218,7 @@ try {
       assert.equal(stemCode.ok, !localStemsWithCloudApi);
       if (!localStemsWithCloudApi) assert.equal(stemCode.code, smokeCode);
       console.log(localStemsWithCloudApi ? `Loopback stem build loaded as extension ${id}.` : 'Offscreen cloud authentication passed through the service worker.');
+      await selectPanel('home');
     }
     const click = name => evaluate(view, `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)}).click()`);
     await click('Dreamy');
@@ -222,6 +226,23 @@ try {
     assert.match(await evaluate(view, "document.querySelector('#feedback').textContent"), /Applied/);
     const afterDreamy = await evaluate(sw, read);
     assert.equal(afterDreamy.status.effects?.reverbMix, 0.33);
+    await evaluate(view, `window.presetLibrary = document.querySelector('#preset-library');
+      document.querySelector('#home-tab').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      document.querySelector('#advanced-presets').open = true;`);
+    assert.equal(await evaluate(view, `document.activeElement.id === 'advanced-tab'
+      && document.querySelector('#home-panel').hidden && !document.querySelector('#advanced-panel').hidden
+      && document.querySelector('#advanced-presets').contains(window.presetLibrary)`), true);
+    const afterNavigation = (await evaluate(sw, read)).status;
+    assert.equal(afterNavigation.session.id, afterDreamy.status.session.id);
+    assert.equal(afterNavigation.revision, afterDreamy.status.revision);
+    assert.deepEqual(afterNavigation.stem, afterDreamy.status.stem);
+    assert.ok(afterNavigation.features.rms > 0.03);
+    assert.equal(await evaluate(view, "Number(document.querySelector('#effect-reverbMix').value)"), 0.33);
+    await click('Warm');
+    await until(async () => (await evaluate(sw, read)).status.effects.bassDb, value => value === 2, 'Advanced preset');
+    await selectPanel('home');
+    await click('Dreamy');
+    await until(async () => (await evaluate(sw, read)).status.effects.bassDb, value => value === 0, 'Home preset');
     await click('Original');
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.monitor, 'original');
@@ -237,10 +258,12 @@ try {
     await click('Reset');
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.effects.reverbMix, 0);
+    await selectPanel('advanced');
     await evaluate(view, "const slider = document.querySelector('#effect-bassDb'); slider.value = '3.5'; slider.dispatchEvent(new Event('input')); slider.dispatchEvent(new Event('change'))");
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.effects.bassDb, 3.5);
     assert.ok(await evaluate(view, 'document.documentElement.scrollWidth <= innerWidth'));
+    await selectPanel('home');
     if (await evaluate(view, "Boolean(document.querySelector('#interpret'))")) {
       const getFeedback = () => evaluate(view, "document.querySelector('#feedback').textContent");
       const submit = () => evaluate(view, "(() => { const field = document.querySelector('#prompt'); field.value = 'A little more bass'; field.dispatchEvent(new Event('input')); document.querySelector('#interpret').requestSubmit(); })()");
@@ -278,6 +301,10 @@ try {
       await evaluate(view, "window.fetch = () => new Promise(resolve => { window.releaseReply = () => resolve(Response.json({mode:'patch',patch:{bassDb:8},summary:'More bass.',unsupported:[]})); })");
       await submit();
       assert.match(await getFeedback(), /Interpreting/);
+      const beforeSwitch = (await evaluate(sw, read)).status;
+      await selectPanel('advanced');
+      assert.match(await getFeedback(), /Interpreting/);
+      assert.equal((await evaluate(sw, read)).status.revision, beforeSwitch.revision);
       await click('Warm');
       await wait(300);
       await evaluate(view, 'window.releaseReply()');
@@ -285,10 +312,12 @@ try {
       assert.equal((await evaluate(sw, read)).status.effects.bassDb, 2);
       const staleRevision = await evaluate(sw, "chrome.runtime.sendMessage({target:'audio',type:'APPLY_EFFECTS',patch:{bassDb:8},sessionId:" + JSON.stringify(capture.status.session.id) + ",baseRevision:" + revision + "})");
       assert.equal(staleRevision.ok, false);
+      await selectPanel('home');
       console.log('Gemini failure, unsupported response and stale edit checks passed.');
     }
     if (process.env.MOODSHIFT_MEMORY_TEST) {
       const status = () => evaluate(view, "document.querySelector('#memory-status').textContent");
+      const remoteStatus = () => evaluate(view, "document.querySelector('#memory-remote-status').textContent");
       const feedback = () => evaluate(view, "document.querySelector('#feedback').textContent");
       const submit = prompt => evaluate(view, `(() => {
         const field = document.querySelector('#prompt');
@@ -297,7 +326,9 @@ try {
         document.querySelector('#interpret').requestSubmit();
       })()`);
       const memory = id => evaluate(view, `document.querySelector('#memory-${id}').click()`);
+      await selectPanel('advanced');
       await evaluate(view, `document.querySelector('#personalization').open = true;
+        document.querySelector('#supermemory-settings').open = true;
         window.memoryCalls = [];
         window.preferenceList = [];
         window.fetch = async (url, options) => {
@@ -318,37 +349,80 @@ try {
       assert.equal(await evaluate(view, "document.querySelector('#memory-enabled').checked"), false);
       await memory('enabled');
       await until(status, text => text === 'Personalization enabled.', 'Local personalization enable');
+      await selectPanel('home');
       await submit('Remember that I like warmer bass.');
-      await until(status, text => text === 'Preference saved to Supermemory.', 'Explicit preference prompt');
-      await evaluate(view, `(() => {
-        const field = document.querySelector('#memory-preference');
-        field.value = 'I like moderate reverb.'; field.dispatchEvent(new Event('input'));
-        document.querySelector('#memory-form').requestSubmit();
+      await until(feedback, text => text === 'Preference saved on this device.', 'Explicit local save prompt');
+      await selectPanel('advanced');
+      const fill = (suffix, text) => evaluate(view, `(() => {
+        const field = document.querySelector('#memory-${suffix}preference');
+        field.value = ${JSON.stringify(text)}; field.dispatchEvent(new Event('input'));
+        document.querySelector('#memory-${suffix}form').requestSubmit();
       })()`);
-      await until(status, text => text === 'Preference saved to Supermemory.', 'Explicit preference form');
-      await memory('view');
-      await until(status, text => text === 'Preferences from Supermemory.', 'Remote preferences view');
-      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 2);
+      await fill('', 'I like moderate reverb.');
+      await until(status, text => text === 'Preference saved on this device.', 'Explicit local form save');
+      await evaluate(view, "document.querySelector('#memory-local-list li button').click()");
+      await fill('', 'I prefer light reverb.');
+      await until(status, text => text === 'Local preference updated.', 'Edit local preference');
+      await selectPanel('home');
       await submit('Remove all bass.');
       await until(feedback, text => text.startsWith('Applied ✓'), 'Personalized Gemini ACK');
-      const calls = await evaluate(view, 'window.memoryCalls');
-      assert.deepEqual(calls.map(call => call.action ?? 'interpret'), ['remember', 'remember', 'view', 'interpret']);
-      assert.equal(calls[3].personalization.installationId, calls[0].installationId);
-      assert.equal(calls[3].personalization.enabled, true);
+      let calls = await evaluate(view, 'window.memoryCalls');
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].personalization, undefined);
+      assert.deepEqual(calls[0].localPreferences, ['I like warmer bass.']);
+      assert.equal((await evaluate(sw, read)).status.effects.bassDb, -6);
+      await selectPanel('advanced');
+      await evaluate(view, "document.querySelector('#memory-local-list li button:nth-child(2)').click()");
+      await until(status, text => text === 'Local preference deleted.', 'Delete local preference');
+      await memory('remote-enabled');
+      await until(remoteStatus, text => text.startsWith('Supermemory enabled'), 'Opt in to Supermemory');
+      await fill('remote-', 'I like moderate reverb.');
+      await until(remoteStatus, text => text === 'Preference saved to Supermemory.', 'Explicit Supermemory save');
+      await memory('view');
+      await until(remoteStatus, text => text === 'Preferences from Supermemory.', 'Remote preferences view');
+      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 1);
+      await selectPanel('home');
+      await submit('Remove all bass.');
+      await until(feedback, text => text.startsWith('Applied ✓'), 'Gemini with both preferences sources');
+      calls = await evaluate(view, 'window.memoryCalls');
+      assert.deepEqual(calls.map(call => call.action ?? 'interpret'), ['interpret', 'remember', 'view', 'interpret']);
+      assert.equal(calls[3].personalization.installationId, calls[1].installationId);
+      assert.deepEqual(calls[3].localPreferences, ['I like warmer bass.']);
+      await selectPanel('advanced');
       await memory('enabled');
       await until(status, text => text.startsWith('Personalization disabled.'), 'Local personalization disable');
+      await selectPanel('home');
       await submit('Remove all bass.');
       await until(feedback, text => text.startsWith('Applied ✓'), 'Ordinary Gemini ACK');
-      assert.equal(await evaluate(view, "'personalization' in window.memoryCalls.at(-1)"), false);
+      assert.equal(await evaluate(view, "!('personalization' in window.memoryCalls.at(-1)) && !('localPreferences' in window.memoryCalls.at(-1))"), true);
+      await selectPanel('advanced');
       await memory('clear');
-      await until(status, text => text === 'Supermemory did not confirm deletion.', 'Remote failure keeps list');
-      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 2);
+      await until(remoteStatus, text => text === 'Supermemory did not confirm deletion.', 'Remote failure keeps list');
+      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 1);
       await evaluate(view, 'window.allowClear = true');
       await memory('clear');
-      await until(status, text => text === 'Supermemory confirmed remote preferences were cleared.', 'Remote clear ACK');
+      await until(remoteStatus, text => text === 'Supermemory confirmed remote preferences were cleared.', 'Remote clear ACK');
       assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 0);
-      console.log('Personalization opt-in, explicit saves, view, Gemini context, opt-out and remote clear passed with mock providers.');
+      assert.equal(await evaluate(view, "document.querySelector('#memory-local-list').children.length"), 1);
+      await selectPanel('home');
+      console.log('Local preference CRUD, Gemini context and opt-out, plus separate Supermemory save/view/clear passed.');
     }
+    const beforeClose = (await evaluate(sw, read)).status;
+    await selectPanel('advanced');
+    const windowId = await evaluate(sw, `chrome.tabs.get(${beforeClose.session.tabId}).then(tab => tab.windowId)`);
+    await evaluate(sw, `chrome.sidePanel.close({windowId:${windowId}})`);
+    await until(async () => (await send('Target.getTargets')).targetInfos.some(t => t.targetId === panel.targetId),
+      open => !open, 'Side panel closed');
+    const withoutPanel = (await evaluate(sw, read)).status;
+    assert.equal(withoutPanel.session.id, beforeClose.session.id);
+    assert.equal(withoutPanel.revision, beforeClose.revision);
+    assert.ok(withoutPanel.features.rms > 0.03);
+    await send('Extensions.triggerAction', { id, targetId });
+    const reopened = await attach((await find(t => t.url === origin + '/sidepanel.html', 'reopened side panel')).targetId);
+    await until(() => evaluate(reopened, "document.querySelector('#advanced-tab')?.getAttribute('aria-selected')"),
+      selected => selected === 'true', 'Advanced selection persisted after reopening');
+    await evaluate(reopened, "document.querySelector('#home-tab').click()");
+    console.log('Capture continued while the side panel was closed and Advanced selection survived reopening.');
   }
   await send('Extensions.triggerAction', { id, targetId });
   await wait(400);
@@ -600,6 +674,15 @@ try {
     assert.notEqual(powers[0], powers[2]);
     await submit('vocals only');
     await until(stemState, stem => stem.phase === 'active' && stem.mode === 'vocals', 'Vocals did not activate');
+    const beforeTabs = (await evaluate(sw, read)).status;
+    await evaluate(panelView, "document.querySelector('#advanced-tab').click(); document.querySelector('#advanced-stems').open = true");
+    assert.equal(await evaluate(panelView, "document.querySelector('#advanced-stems').contains(document.querySelector('[data-stem=vocals][aria-pressed=true]'))"), true);
+    await evaluate(panelView, "document.querySelector('#home-tab').click()");
+    const afterTabs = (await evaluate(sw, read)).status;
+    assert.equal(afterTabs.session.id, beforeTabs.session.id);
+    assert.equal(afterTabs.revision, beforeTabs.revision);
+    assert.deepEqual(afterTabs.stem, beforeTabs.stem);
+    console.log('Active Vocals stem and capture survived Home and Advanced navigation.');
     await click('Original');
     assert.match(await until(() => evaluate(panelView, "document.querySelector('#stem-status').textContent"),
       value => value.includes('Live mix'), 'Original bypass label'), /delayed stem/);
@@ -659,7 +742,8 @@ try {
     }
     await evaluate(player, `document.querySelector('${media}').pause()`);
     await wait(3250);
-    assert.equal((await stemState()).phase, 'active', 'Paused PCM remains in sequence');
+    const pausedStem = await stemState();
+    assert.equal(pausedStem.phase, 'active', `Paused PCM remains in sequence: ${JSON.stringify(pausedStem)}`);
     await evaluate(player, `document.querySelector('${media}').play()`);
     await send('Target.activateTarget', { targetId: page.targetId });
     await send('Extensions.triggerAction', { id, targetId });
@@ -756,6 +840,8 @@ try {
     console.log('YouTube signal, Dreamy ACK, uninterrupted playhead, background capture, panel reopen and Stop passed.');
   }
   if (process.env.MOODSHIFT_PRESETS_TEST) {
+    const lastPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'side panel before restart')).targetId);
+    await evaluate(lastPanel, "document.querySelector('#advanced-tab').click()");
     await closeChrome();
     [chrome, chromeExited] = launchChrome();
     const reloaded = await send('Extensions.loadUnpacked', { path: extensionPath });
@@ -769,11 +855,19 @@ try {
     const restartedPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'restarted side panel')).targetId);
     const readStatus = () => evaluate(restartedPanel, "chrome.runtime.sendMessage({target:'worker',type:'GET_STATUS'})");
     await until(readStatus, reply => reply.status.phase === 'capturing', 'Restarted capture');
+    assert.equal(await evaluate(restartedPanel, "document.querySelector('#advanced-tab').getAttribute('aria-selected')"), 'true');
+    if (process.env.MOODSHIFT_MEMORY_TEST) {
+      const list = () => evaluate(restartedPanel, "Array.from(document.querySelectorAll('#memory-local-list li span'), row => row.textContent)");
+      assert.deepEqual(await until(list, rows => rows.length === 1, 'Preferences persisted after Chrome restart'), ['I like warmer bass.']);
+      assert.equal(await evaluate(restartedPanel, "document.querySelector('#memory-enabled').checked"), false);
+      console.log('Local preference, opt-out and selected tab persisted across Chrome restart.');
+    }
     assert.equal((await readStatus()).status.effects.reverbMix, 0);
     await until(() => evaluate(restartedPanel,
       "[...document.querySelector('#saved-preset-list').options].find(option => option.text === 'Restart preset')?.value"),
       Boolean, 'Preset persisted across Chrome restart');
-    await evaluate(restartedPanel, `document.querySelector('#saved-presets').open = true;
+    await evaluate(restartedPanel, `document.querySelector('#advanced-presets').open = true;
+      document.querySelector('#saved-presets').open = true;
       window.fetch = () => { throw new Error('Preset restore must work offline'); };
       const select = document.querySelector('#saved-preset-list');
       select.value = [...select.options].find(option => option.text === 'Restart preset').value;

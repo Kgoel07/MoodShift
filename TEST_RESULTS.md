@@ -86,3 +86,14 @@ November 14, 2026 · Windows · Node.js 22.20.0 · Chrome 157.0.8103.52
 | Human listening, diagram usability, and timing by ear | NOT RUN | Run the Chrome and stem listening checklists in [README.md](README.md). macOS stems and CPU-only live stems retain the hardware limitations recorded above. |
 
 Cloud-build and deployment preparation checks are recorded in [CLOUD_DEPLOY_STATUS.md](CLOUD_DEPLOY_STATUS.md).
+
+## Local preferences and Home / Advanced
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Typecheck, development build, and production build | PASS (automated) | `npm run typecheck`, `npm run build:extension`, and `npm run build:extension -- --mode production`. |
+| Full Vitest suite | PASS (automated) | 106 tests, including local preference storage, relevance and limits, the authenticated shared-demo interpretation path, and existing private-owner Supermemory checks. Loopback access was required for the HTTP tests. |
+| Home and Advanced in Chrome | PASS (automated) | Keyboard navigation, preset application in both tabs, preserved prompt processing, one audio session and uninterrupted signal while the panel was closed, and selected-tab recovery on reopen. |
+| Preferences and saved presets in Chrome | PASS (automated) | Local saves, edits, deletions, and opt-out. Preferences, opt-out, and exact audio presets persisted across Chrome restart. Chrome exercised both builds with mocked Gemini and Supermemory. |
+| Active stem in production Chrome with the laptop helper | PASS (automated on retry) | Both stem outputs produced PCM from the local fixture. The active Vocals session survived Home and Advanced navigation on both runs. The first run reported the stem unavailable after pausing. The standalone rerun passed pause/resume, A/B, tab switch, reconnection, and Stop. |
+| Live YouTube listening and live providers on this revision | NOT RUN | In desktop Chrome, open Advanced while playing a YouTube track, try the lyric offset and chord diagrams, and switch tabs while applying a preset and an active stem. On the updated backend, try a broad Gemini prompt with a local preference, then give a conflicting explicit instruction. Check live Supermemory only with a configured private owner or local backend. |

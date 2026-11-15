@@ -43,14 +43,17 @@ MoodShift sends the exact YouTube watch URL to Songle when you open **Chords**. 
 
 Saved presets are shared across songs in the same Chrome profile. They use local Chrome extension storage and work without Gemini or Supermemory. An active capture is needed to save, update the audio settings, or apply a preset.
 
-## Optional personalization
+## Side panel and sound preferences
 
-1. Set `SUPERMEMORY_API_KEY` in `server/.env` and restart `npm run dev:server`. Use an organization admin or owner key with namespace write access to clear preferences from the panel. Keep both API keys in `server/.env`. [Supermemory console](https://console.supermemory.ai/) · [Namespace permissions](https://supermemory.ai/docs/concepts/container-tags)
-2. Open **Personalization** and check **Use remembered sound preferences**. Enter a short preference such as “I prefer strong bass” and click **Remember preference**. You can also submit “Remember that I prefer strong bass” or “I usually prefer warmer bass” through the main prompt.
-3. Click **View preferences** after indexing. The panel shows up to 30 indexed entries. Ask Gemini “Make this song sound better,” then “Remove all bass.” The second request explicitly sets the direction even when the stored preference favors bass.
-4. Turn personalization off to stop preference lookups. **Clear remote preferences** requests deletion of the installation’s Supermemory namespace and waits for acknowledgment. You can view and clear remote preferences with personalization disabled. Clear remote preferences before uninstalling or deleting the Chrome profile if you intend to erase them. [Supermemory deletion and retention](https://supermemory.ai/security/#retention-and-deletion)
+**Home** contains the prompt, quick presets, My Presets, Original/Modified, and stem choices. **Advanced** contains the effect sliders, lyrics, chord diagrams, stem buffer details, personalization, and private demo access. Presets and the stem controls are available in both tabs. Select a tab with the mouse or with the Left and Right arrow keys when the tab has focus. MoodShift remembers the last selected tab in the same Chrome profile.
 
-Personalization starts disabled. A random installation ID in local Chrome storage scopes the remote namespace across browser restarts. MoodShift sends explicit preference text to Supermemory and retrieves a small profile context for opted-in Gemini prompts. Ordinary prompts go to Gemini. Supermemory receives only the preference text and a namespace derived from the installation ID. A missing key, slow lookup, or service outage leaves regular Gemini interpretation available. The proxy is a single-user localhost service. Its installation ID identifies a namespace and provides no authentication. Public deployment would require authentication and authorization before exposing these routes.
+In **Advanced → Personalization**, enter a short sound preference such as “I prefer warm bass and minimal distortion” and choose **Save locally**. Each entry has Edit and Delete controls. During capture, “Remember that I prefer warm bass” in the main prompt also saves locally. Local preferences and saved presets use separate Chrome storage and persist across restarts. Local preferences support up to 30 entries of 240 characters each.
+
+Turn on **Use remembered sound preferences** to let the extension send up to four relevant entries with each Gemini prompt. Broad mood requests can use recent preferences. Explicit instructions take priority, so “Remove all bass” takes precedence over a bass preference. Turn the setting off to stop using preferences while keeping them on the device. Use a backend built from this revision to accept the local context field.
+
+### Optional Supermemory
+
+The **Supermemory** section has its own opt-in and Save, View, and Clear controls. Configure `SUPERMEMORY_API_KEY` on the local proxy or a private owner deployment. Existing Supermemory settings and installation IDs continue to work. Shared Vercel demos support local personalization. Supermemory writes require explicit use of **Save to Supermemory**. Clear remote preferences waits for provider confirmation and remains available with personalization disabled. [Vercel settings](docs/DEPLOY_VERCEL.md#prepare-the-extension-id-and-credentials) · [Namespace permissions](https://supermemory.ai/docs/concepts/container-tags)
 
 ## Optional live stems on Windows
 

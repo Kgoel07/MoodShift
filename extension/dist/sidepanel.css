@@ -32,8 +32,14 @@ h2, form > label { font-size: 13px; font-weight: 650; }
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 11px 12px;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
+.panel-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 9px; }
+.panel-tabs button { border-color: transparent; font-weight: 650; }
+.panel-tabs button[aria-selected="true"] { color: var(--accent); background: #283b3a; border-color: #3e5853; }
+.panel-page { margin-top: 14px; }
+#effect-settings { margin-top: 0; }
+#advanced-presets .preset-section { margin-top: 3px; }
 #status { font-size: 13px; overflow-wrap: anywhere; }
 #input-status, #prompt-help { font-size: 11px; color: var(--muted); }
 #input-status:not(:empty) { margin-top: 4px; }
@@ -89,11 +95,11 @@ button:disabled { opacity: .55; cursor: default; }
 }
 .saved-preset-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 5px 0 8px; font-size: 12px; }
 #saved-preset-status, #saved-preset-notice { color: var(--muted); font-size: 11px; margin-bottom: 5px; overflow-wrap: anywhere; }
-#personalization > label, #memory-list { font-size: 12px; }
-#memory-enabled { accent-color: var(--accent); }
-#memory-help, #memory-status { color: var(--muted); font-size: 11px; margin: 4px 0 8px; overflow-wrap: anywhere; }
-#memory-form .saved-preset-actions { margin: 0; }
-#memory-list { margin: 5px 0 8px; padding-inline-start: 18px; overflow-wrap: anywhere; }
+#personalization label, #personalization ul { font-size: 12px; }
+#personalization input[type="checkbox"] { accent-color: var(--accent); }
+.memory-help, #memory-status, #memory-remote-status, .setting-help { color: var(--muted); font-size: 11px; margin: 4px 0 8px; overflow-wrap: anywhere; }
+#memory-form .saved-preset-actions, #memory-remote-form .saved-preset-actions { margin: 0; }
+#memory-list, #memory-local-list { margin: 8px 0; padding-inline-start: 18px; overflow-wrap: anywhere; }
 #cloud-code-status, #cloud-stem-note { color: var(--muted); font-size: 11px; margin: 4px 0 8px; overflow-wrap: anywhere; }
 .stem-section { margin-top: 14px; }
 #stems { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }

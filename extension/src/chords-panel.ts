@@ -115,7 +115,7 @@ export function mountChords(root: HTMLElement) {
       const active = buttons[highlighted];
       if (active) {
         active.setAttribute('aria-current', 'true');
-        if (selected === undefined) progression.scrollLeft = active.offsetLeft - (progression.clientWidth - active.clientWidth) / 2;
+        centerActive();
       }
     }
     current.textContent = found[position.current]?.chord ?? '—';
@@ -125,6 +125,15 @@ export function mountChords(root: HTMLElement) {
     if (selected !== undefined) buttons[selected].setAttribute('aria-pressed', 'true');
     showDiagram(found[selected ?? position.current]?.chord);
   }
+
+  function centerActive(): void {
+    const active = buttons[highlighted];
+    if (active && selected === undefined && progression.clientWidth) {
+      progression.scrollLeft = active.offsetLeft - (progression.clientWidth - active.clientWidth) / 2;
+    }
+  }
+
+  new ResizeObserver(centerActive).observe(progression);
 
   function sync(): void {
     session.setPlayback(details.open ? playback : null);

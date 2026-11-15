@@ -52,12 +52,13 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, me
       if (!res.writableEnded) controller.abort();
     });
     try {
-      const { personalization, ...audioRequest } = request.data;
+      const { personalization, localPreferences = [], ...audioRequest } = request.data;
       const memoryAllowed = policy.mode === 'local'
         || (policy.mode === 'cloud-owner' && personalization?.installationId === policy.installationId);
-      const preferences = config.apiKey && memoryAllowed && personalization?.enabled
+      const remotePreferences = config.apiKey && memoryAllowed && personalization?.enabled
         ? await memory?.context(personalization.installationId, controller.signal) : undefined;
       if (controller.signal.aborted) return;
+      const preferences = [...new Set([...localPreferences, ...(remotePreferences ?? [])])];
       const result = await interpret(audioRequest, config, fetcher, controller.signal, preferences);
       if (!controller.signal.aborted) res.json(result);
     } catch (error) {

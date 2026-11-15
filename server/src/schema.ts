@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { clampEffects, effectKeys, effectSpecs, type EffectKey } from '../../extension/src/shared/effects.js';
 import { parseInterpretation, stemModes } from '../../extension/src/shared/types.js';
+import { preferenceContextLimit, preferenceLimit, preferenceTextPattern } from '../../extension/src/shared/preferences.js';
 import { installationId } from './memory.js';
 
 const effectNumbers = Object.fromEntries(effectKeys.map(key => [key, z.number()])) as Record<EffectKey, z.ZodNumber>;
@@ -20,6 +21,7 @@ export const requestSchema = z.strictObject({
   currentEffects: z.strictObject(effectNumbers).transform(clampEffects),
   audioFeatures: features,
   personalization: z.strictObject({ installationId, enabled: z.literal(true) }).optional(),
+  localPreferences: z.array(z.string().trim().max(preferenceLimit).regex(preferenceTextPattern)).max(preferenceContextLimit).optional(),
 });
 
 const textSchema = z.strictObject({
@@ -55,7 +57,7 @@ const responseSchema = z.strictObject({
 
 const { $schema: _dialect, ...modelJsonSchema } = z.toJSONSchema(responseSchema);
 export { modelJsonSchema };
-export type InterpretRequest = Omit<z.output<typeof requestSchema>, 'personalization'>;
+export type InterpretRequest = Omit<z.output<typeof requestSchema>, 'personalization' | 'localPreferences'>;
 
 export function parseModelContent(content: string, current: InterpretRequest['currentEffects']) {
   if (!content || content.length > 4096) throw new Error('Invalid model content length.');

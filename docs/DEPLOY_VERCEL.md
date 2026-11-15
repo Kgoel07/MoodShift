@@ -27,7 +27,7 @@ The repository root is the Vercel project. Its Express entry point exports the a
 | `SUPERMEMORY_API_KEY` | Optional in `cloud-owner` only. Store it as a sensitive variable. |
 | `CLOUD_MEMORY_INSTALLATION_ID` | Required in `cloud-owner`. Set it to that operator’s extension installation UUID. |
 
-`cloud-demo` disables memory operations and profile retrieval. For `cloud-owner`, enable **Personalization** in the extension to create its installation ID. In the extension side panel’s DevTools Console, run `(await chrome.storage.local.get('moodshiftPersonalization')).moodshiftPersonalization?.installationId`. Copy the UUID into the Vercel setting. The backend pins this namespace and still requires the code on every request. Keep the owner deployment and its code private. A shared code and a client-provided UUID provide no multi-user authorization.
+`cloud-demo` accepts bounded local preference context for Gemini and disables Supermemory operations and profile retrieval. Deploy the matching backend revision before using local personalization in the production extension. For `cloud-owner`, enable **Advanced → Personalization** in the extension to create its installation ID, and enable Supermemory in that section to use the remote profile. In the extension side panel’s DevTools Console, run `(await chrome.storage.local.get('moodshiftPersonalization')).moodshiftPersonalization?.installationId`. Copy the UUID into the Vercel setting. The backend pins this namespace and still requires the code on every request. Keep the owner deployment and its code private. A shared code and a client-provided UUID provide no multi-user authorization.
 
 ## Deploy from the dashboard
 

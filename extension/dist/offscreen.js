@@ -298,7 +298,7 @@
   };
 
   // extension/src/shared/deployment.ts
-  var demoCodePattern = /^[A-Za-z0-9_-]{32,128}$/;
+  var localStemWsUrl = "ws://127.0.0.1:8788";
   var dnsName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
   function endpoint(raw, name, protocol, local, forStems) {
     const invalid = new Error(`${name} must be a ${protocol} endpoint on ${local ? "127.0.0.1" : "a specific public DNS hostname"}.`);
@@ -327,13 +327,9 @@
       local,
       false
     );
-    const stems = endpoint(
-      env.STEM_WS_URL ?? (local ? "ws://127.0.0.1:8788" : ""),
-      "STEM_WS_URL",
-      local ? "ws:" : "wss:",
-      local,
-      true
-    );
+    const stemUrl = env.STEM_WS_URL ?? (local ? localStemWsUrl : "");
+    const localStem = local || stemUrl === localStemWsUrl || stemUrl === localStemWsUrl + "/";
+    const stems = endpoint(stemUrl, "STEM_WS_URL", localStem ? "ws:" : "wss:", localStem, true);
     const delay = env.STEM_DELAY_SECONDS === void 0 ? local ? 2.8 : 4.5 : Number(env.STEM_DELAY_SECONDS);
     if (!Number.isFinite(delay) || delay < 2.8 || delay > 8 || Math.round(delay * 10) / 10 !== delay) {
       throw new Error("STEM_DELAY_SECONDS must be 2.8 to 8.0 seconds in tenths.");
@@ -346,16 +342,8 @@
     };
   }
   var deployment = typeof define_MOODSHIFT_DEPLOYMENT_default === "undefined" ? deploymentFromEnv("development", {}) : define_MOODSHIFT_DEPLOYMENT_default;
-
-  // extension/src/api-client.ts
-  var demoCodeKey = "moodshiftDemoAccessCode";
-  async function cloudDemoCode(config = deployment) {
-    if (config.mode !== "production") return;
-    const code = (await chrome.storage.local.get(demoCodeKey))[demoCodeKey];
-    if (typeof code !== "string" || !demoCodePattern.test(code)) {
-      throw new Error("Enter the private demo access code in MoodShift settings.");
-    }
-    return code;
+  function usesCloudStems(config = deployment) {
+    return config.stemWsUrl.startsWith("wss://");
   }
 
   // extension/src/stem-stream.ts
@@ -376,11 +364,18 @@
     }
     async start(buffering) {
       let demoCode;
-      try {
-        demoCode = await cloudDemoCode();
-      } catch (error) {
-        this.fail(error instanceof Error ? error.message : "Could not read the private demo code.");
-        return;
+      if (usesCloudStems()) {
+        try {
+          const reply = await chrome.runtime.sendMessage({
+            target: "worker",
+            type: "GET_STEM_CODE"
+          });
+          if (!reply.ok) throw new Error(reply.message);
+          demoCode = reply.code;
+        } catch (error) {
+          this.fail(error instanceof Error ? error.message : "Could not read the private demo code.");
+          return;
+        }
       }
       if (this.closed) return;
       let module = loaded.get(this.context);
