@@ -27,6 +27,7 @@
     <p id="feedback" role="status"></p>
 
     <section id="home-panel" class="panel-page" role="tabpanel" aria-labelledby="home-tab">
+      <p id="current-song" hidden></p>
       <form id="interpret">
         <label for="prompt">Describe an effect</label>
         <textarea id="prompt" rows="3" maxlength="500" placeholder="Make it warmer and more dreamy" aria-describedby="prompt-help"></textarea>
@@ -38,7 +39,7 @@
       <div id="home-presets">
         <div id="preset-library">
           <section class="preset-section" aria-labelledby="preset-label">
-            <h2 id="preset-label">Presets</h2>
+            <h2 id="preset-label">Choose Your Mood</h2>
             <div id="presets"></div>
           </section>
           <details id="saved-presets">
@@ -63,6 +64,9 @@
           </details>
         </div>
       </div>
+      <section id="karaoke-lyrics" aria-labelledby="karaoke-lyrics-title" hidden>
+        <h2 id="karaoke-lyrics-title">Sing along</h2>
+      </section>
       <div id="monitor" role="group" aria-label="Audio monitor">
         <button type="button" data-mode="original" aria-pressed="false">Original</button>
         <button type="button" data-mode="modified" aria-pressed="true">Modified</button>
@@ -75,7 +79,7 @@
             <button type="button" data-stem="instrumental" aria-pressed="false" disabled>Instrumental</button>
             <button type="button" data-stem="vocals" aria-pressed="false" disabled>Vocals</button>
           </div>
-          <p id="cloud-stem-note" hidden>Selecting a stem streams this tab’s audio to the configured cloud worker.</p>
+          <p id="cloud-stem-note" hidden>Vocals and Instrumental send this tab’s audio to the cloud.</p>
         </section>
       </div>
     </section>
@@ -84,17 +88,17 @@
       <details id="effect-settings" open>
         <summary>Effect controls</summary>
         <fieldset id="controls" aria-label="Effect settings" disabled></fieldset>
+        <button id="reset-effects" type="button" disabled>Reset effects</button>
       </details>
       <details id="advanced-presets">
         <summary>Presets</summary>
       </details>
       <details id="advanced-stems">
         <summary>Stem controls</summary>
-        <p id="stem-buffer" class="setting-help"></p>
       </details>
       <section id="lyrics" aria-labelledby="lyrics-label">
         <h2 id="lyrics-label">Lyrics</h2>
-        <p id="lyrics-status" role="status">Select a playing YouTube tab with the MoodShift icon.</p>
+        <p id="lyrics-status" role="status">Select a playing tab with the MoodShift icon.</p>
         <div id="lyrics-viewport" role="region" aria-label="Song lyrics" tabindex="0" hidden></div>
         <form id="lyrics-search" hidden>
           <label for="lyrics-title">Song Title</label>
@@ -102,19 +106,19 @@
           <label for="lyrics-artist">Artist</label>
           <input id="lyrics-artist" type="text" maxlength="200" required>
           <div class="lyrics-options">
-            <label for="lyrics-offset">Lyric offset (s)
+            <label for="lyrics-offset">Timing adjustment (s)
               <input id="lyrics-offset" type="number" min="-10" max="10" step="0.1" value="0" aria-describedby="lyrics-offset-help">
             </label>
             <label><input id="lyrics-follow" type="checkbox" checked disabled> Follow playback</label>
           </div>
-          <p id="lyrics-offset-help">Positive values delay lyrics and chord highlights.</p>
+          <p id="lyrics-offset-help">Use a negative value if the words appear too late.</p>
           <button id="lyrics-submit" type="submit" disabled>Search lyrics</button>
         </form>
       </section>
       <details id="chords">
         <summary>Chords</summary>
-        <p id="chords-status" role="status">Select a YouTube watch tab with the MoodShift icon.</p>
-        <button type="button" id="chords-retry" hidden>Retry Songle</button>
+        <p id="chords-status" role="status">Select a playing tab with the MoodShift icon.</p>
+        <button type="button" id="chords-retry" hidden>Retry chords</button>
         <div id="chords-content" hidden>
           <p>Current Chord: <strong id="chord-current">—</strong> · Next: <strong id="chord-next">—</strong></p>
           <div id="chord-progression" aria-label="Chord progression" tabindex="0"></div>
@@ -124,7 +128,7 @@
       <details id="personalization">
         <summary>Personalization</summary>
         <label><input id="memory-enabled" type="checkbox" disabled> Use remembered sound preferences</label>
-        <p class="memory-help">Saved on this device. When enabled, relevant preferences accompany your Gemini prompt.</p>
+        <p class="memory-help">Preferences are saved on this device and included when you ask Gemini to change the sound.</p>
         <form id="memory-form" class="saved-preset-fields">
           <label for="memory-preference">Sound preference</label>
           <input id="memory-preference" type="text" maxlength="240" placeholder="I prefer warmer bass" disabled>
@@ -135,33 +139,6 @@
         </form>
         <ul id="memory-local-list" aria-label="Local sound preferences" hidden></ul>
         <p id="memory-status" role="status"></p>
-        <details id="supermemory-settings">
-          <summary>Supermemory</summary>
-          <label><input id="memory-remote-enabled" type="checkbox" disabled> Use Supermemory preferences</label>
-          <p class="memory-help">Requires a configured local proxy or private owner backend.</p>
-          <form id="memory-remote-form" class="saved-preset-fields">
-            <label for="memory-remote-preference">Cloud sound preference</label>
-            <input id="memory-remote-preference" type="text" maxlength="240" disabled>
-            <div class="saved-preset-actions">
-              <button id="memory-remote-save" type="submit" disabled>Save to Supermemory</button>
-            </div>
-          </form>
-          <div class="saved-preset-actions">
-            <button id="memory-view" type="button" disabled>View remote preferences</button>
-            <button id="memory-clear" type="button" disabled>Clear remote preferences</button>
-          </div>
-          <ul id="memory-list" aria-label="Supermemory preferences" hidden></ul>
-          <p id="memory-remote-status" role="status"></p>
-        </details>
-      </details>
-      <details id="cloud-settings" hidden>
-        <summary>Private demo access</summary>
-        <form id="cloud-code-form" class="saved-preset-fields">
-          <label for="cloud-code">Demo access code</label>
-          <input id="cloud-code" type="password" maxlength="128" autocomplete="off" placeholder="Leave blank to clear">
-          <div class="saved-preset-actions"><button type="submit">Save demo code</button></div>
-        </form>
-        <p id="cloud-code-status" role="status"></p>
       </details>
     </section>
     <footer><button id="stop" type="button" disabled>Stop processing</button></footer>

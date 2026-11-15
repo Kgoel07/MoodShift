@@ -72,6 +72,7 @@
       this.vocalsEnd = 0;
       this.started = false;
       this.signaled = false;
+      this.nextTimingReport = 0;
       this.failed = false;
       for (let index = 0; index < 8; index++) {
         this.pool.push(packetView(new ArrayBuffer(stemHeaderBytes + stemPacketFrames * stereoFrameBytes)));
@@ -146,7 +147,11 @@
         output[3][index] = this.dry[offset + 1] - vocalR;
         if (!this.signaled) {
           this.signaled = true;
-          this.channel?.postMessage({ type: "active" });
+          this.channel?.postMessage({ type: "active", queuedFrames: position - playback });
+          this.nextTimingReport = position + sampleRate;
+        } else if (position >= this.nextTimingReport) {
+          this.port.postMessage({ queuedFrames: position - playback });
+          this.nextTimingReport = position + sampleRate;
         }
       }
       return true;

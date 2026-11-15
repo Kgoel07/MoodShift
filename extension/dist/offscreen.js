@@ -37,13 +37,6 @@
   function applyPatch(current, patch) {
     return { ...current, ...clampPatch(patch) };
   }
-  var presets = {
-    Dreamy: Object.freeze({ ...neutralEffects, reverbMix: 0.33, trebleDb: -2 }),
-    Warm: Object.freeze({ ...neutralEffects, bassDb: 2, trebleDb: -3 }),
-    Underwater: Object.freeze({ ...neutralEffects, lowpassHz: 1e3 }),
-    "Bass Boost": Object.freeze({ ...neutralEffects, bassDb: 5 }),
-    "Clear Voice": Object.freeze({ ...neutralEffects, highpassHz: 100, bassDb: -2, trebleDb: 2 })
-  };
 
   // extension/src/audio-engine.ts
   var timeConstant = 0.075;
@@ -166,6 +159,10 @@
     }
     disconnectStem(capture) {
       this.source.disconnect(capture);
+    }
+    tapInput(node) {
+      this.source.connect(node);
+      return () => this.source.disconnect(node);
     }
     setStemActive(active) {
       if (active === this.activeStem) return;
@@ -362,6 +359,9 @@
       this.timer = setTimeout(() => this.fail("The stem helper did not start in time."), (deployment.stemDelaySeconds + 2.7) * 1e3);
       void this.start(buffering).catch(() => this.fail("Could not initialize stem playback."));
     }
+    get playoutDelay() {
+      return this.queuedFrames === void 0 ? deployment.stemDelaySeconds : this.queuedFrames / this.context.sampleRate;
+    }
     async start(buffering) {
       let demoCode;
       if (usesCloudStems()) {
@@ -418,6 +418,7 @@
         if (this.closed) return;
         if (data.type === "buffering") buffering();
         if (data.type === "active") {
+          this.queuedFrames = data.queuedFrames;
           clearTimeout(this.timer);
           this.resolveReady();
         }
@@ -425,6 +426,9 @@
       };
       worker.onerror = () => this.fail("Stem communication failed.");
       node.onprocessorerror = () => this.fail("Chrome stopped the stem audio processor.");
+      node.port.onmessage = ({ data }) => {
+        if (!this.closed) this.queuedFrames = data.queuedFrames;
+      };
       node.port.postMessage(channel.port1, [channel.port1]);
       worker.postMessage({
         port: channel.port2,
@@ -466,6 +470,97 @@
     }
   };
 
+  // extension/src/live-chord-analysis.ts
+  var pitchNames = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+  function estimateChord(spectrum, sampleRate) {
+    const hzPerBin = sampleRate / (2 * spectrum.length);
+    const start2 = Math.ceil(65 / hzPerBin);
+    const end2 = Math.min(Math.floor(1600 / hzPerBin), spectrum.length - 2);
+    let loudest = -Infinity;
+    for (let bin = start2; bin <= end2; bin++) loudest = Math.max(loudest, spectrum[bin]);
+    if (loudest < -72) return null;
+    const chroma = new Float32Array(12);
+    let total = 0;
+    for (let bin = start2; bin <= end2; bin++) {
+      const left = spectrum[bin - 1];
+      const peak = spectrum[bin];
+      const right = spectrum[bin + 1];
+      if (peak < loudest - 26 || peak <= left || peak < right) continue;
+      const curvature = left - 2 * peak + right;
+      const correction = Number.isFinite(curvature) && curvature ? 0.5 * (left - right) / curvature : 0;
+      const frequency = (bin + correction) * hzPerBin;
+      const midi = 69 + 12 * Math.log2(frequency / 440);
+      const closest = Math.round(midi);
+      const pitch = (closest % 12 + 12) % 12;
+      let weight = 10 ** ((peak - loudest) / 25) * (1 - Math.abs(midi - closest));
+      for (const harmonic of [2, 3, 4, 5]) {
+        const fundamental = Math.round(frequency / (hzPerBin * harmonic));
+        if (fundamental >= start2 && Math.max(spectrum[fundamental - 1], spectrum[fundamental], spectrum[fundamental + 1]) > peak - 3) {
+          weight *= 0.4;
+          break;
+        }
+      }
+      chroma[pitch] += weight;
+      total += weight;
+    }
+    if (!total) return null;
+    let chord = null;
+    let best = 0;
+    let runnerUp = 0;
+    for (let root = 0; root < 12; root++) {
+      for (const third of [3, 4]) {
+        const rootEnergy = chroma[root];
+        const thirdEnergy = chroma[(root + third) % 12];
+        const fifthEnergy = chroma[(root + 7) % 12];
+        const balance = Math.min(rootEnergy, thirdEnergy, fifthEnergy) / total;
+        const coverage = (rootEnergy + thirdEnergy + fifthEnergy) / total;
+        if (balance < 0.075 || coverage < 0.61) continue;
+        const score = coverage + balance * 0.65;
+        if (score > best) {
+          runnerUp = best;
+          best = score;
+          chord = pitchNames[root] + (third === 3 ? "m" : "");
+        } else runnerUp = Math.max(runnerUp, score);
+      }
+    }
+    return best - runnerUp >= 0.075 ? chord : null;
+  }
+  var LiveChordAnalyzer = class {
+    constructor(context) {
+      this.context = context;
+      this.stable = null;
+      this.node = context.createAnalyser();
+      this.node.fftSize = 16384;
+      this.node.smoothingTimeConstant = 0.2;
+      this.spectrum = new Float32Array(this.node.frequencyBinCount);
+    }
+    get windowCenter() {
+      return this.node.fftSize / (2 * this.context.sampleRate);
+    }
+    sample(audible) {
+      if (!audible) {
+        this.previous = this.stable = null;
+        return null;
+      }
+      this.node.getFloatFrequencyData(this.spectrum);
+      const candidate = estimateChord(this.spectrum, this.context.sampleRate);
+      if (candidate === this.previous) this.stable = candidate;
+      this.previous = candidate;
+      return this.stable;
+    }
+  };
+
+  // extension/src/shared/chords.ts
+  var liveChordPort = "moodshift-live-chords:";
+
+  // extension/src/playout-timing.ts
+  var positive = (value) => value !== void 0 && Number.isFinite(value) && value > 0 ? value : 0;
+  function audioTiming(monitor, phase, running, contextLatency, deviceLatency, playedStemSeconds) {
+    if (!running) return { seconds: 0, stemSeconds: 0 };
+    const stemSeconds = monitor === "modified" && phase === "active" ? positive(playedStemSeconds) : 0;
+    return { seconds: stemSeconds + positive(contextLatency) + positive(deviceLatency), stemSeconds };
+  }
+
   // extension/src/shared/messages.ts
   var meterChannel = "moodshift-meter";
   function statusChanged() {
@@ -477,20 +572,45 @@
   var problem;
   var pending = Promise.resolve();
   var meterUpdates = new BroadcastChannel(meterChannel);
+  function removeChordPort(capture, port) {
+    const chords = capture.chords;
+    if (!chords) return;
+    chords.ports.delete(port);
+    if (chords.ports.size) return;
+    capture.chords = void 0;
+    chords.disconnect();
+  }
+  chrome.runtime.onConnect.addListener((port) => {
+    const capture = live;
+    if (!capture?.engine || port.name !== liveChordPort + capture.session.id || port.sender?.url !== chrome.runtime.getURL("sidepanel.html")) return;
+    if (!capture.chords) {
+      const analyzer = new LiveChordAnalyzer(capture.context);
+      capture.chords = { analyzer, ports: /* @__PURE__ */ new Set(), disconnect: capture.engine.tapInput(analyzer.node) };
+    }
+    capture.chords.ports.add(port);
+    port.onDisconnect.addListener(() => removeChordPort(capture, port));
+  });
+  function playout(capture) {
+    const { context, monitor, stem, stemStream } = capture;
+    return audioTiming(monitor, stem.phase, context.state === "running", context.baseLatency, context.outputLatency, stemStream?.playoutDelay);
+  }
   function read() {
     if (live) {
       const { session, effects, revision, monitor, features, context, stem } = live;
-      return { phase: "capturing", session, effects, revision, monitor, features, stem, outputPaused: context.state !== "running" };
+      return { phase: "capturing", session, effects, revision, monitor, features, stem, outputPaused: context.state !== "running", audioTiming: playout(live) };
     }
     return problem ? { phase: "error", message: problem } : { phase: "ready" };
   }
   async function stop(sessionId, error) {
     if (live?.session.id !== sessionId) return;
-    const { engine, stream, context, timer, stemStream } = live;
+    const { engine, stream, context, timer, stemStream, chords } = live;
+    live.chords = void 0;
     live = void 0;
     problem = error;
     clearInterval(timer);
     stemStream?.close();
+    chords?.disconnect();
+    chords?.ports.forEach((port) => port.disconnect());
     engine?.disconnect();
     stream.getTracks().forEach((track) => track.stop());
     if (context.state !== "closed") await context.close();
@@ -573,7 +693,21 @@
       const meter = new AudioFeaturesMeter(live.engine.analyser, context.sampleRate);
       capture.timer = setInterval(() => {
         capture.features = context.state === "running" ? meter.sample() : silentFeatures;
-        meterUpdates.postMessage({ sessionId: session.id, features: capture.features });
+        const timing = playout(capture);
+        meterUpdates.postMessage({ sessionId: session.id, features: capture.features, audioTiming: timing });
+        if (capture.chords) {
+          const { analyzer, ports } = capture.chords;
+          const chord = analyzer.sample(context.state === "running" && !capture.session.muted && !capture.features.isSilent);
+          const capturedAt = (performance.timeOrigin + performance.now()) / 1e3 - analyzer.windowCenter;
+          for (const port of ports) {
+            try {
+              port.postMessage({ chord, capturedAt, outputDelay: timing.seconds });
+            } catch {
+              removeChordPort(capture, port);
+              port.disconnect();
+            }
+          }
+        }
       }, 250);
     } catch (error) {
       stream?.getTracks().forEach((track) => track.stop());
