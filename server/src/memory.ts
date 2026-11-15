@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Supermemory, SupermemoryError } from 'supermemory';
 import { z } from 'zod';
-import { installationIdPattern, preferenceLimit } from '../../extension/src/shared/preferences';
+import { installationIdPattern, preferenceLimit } from '../../extension/src/shared/preferences.js';
 
 export const installationId = z.string().regex(installationIdPattern).transform(id => id.toLowerCase());
 const preference = z.string().trim().min(1).max(preferenceLimit).regex(/^[^\u0000-\u001f\u007f]+$/);

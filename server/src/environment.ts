@@ -1,6 +1,6 @@
-import { accessFromEnv } from './access';
-import { createApp } from './index';
-import { createMemory } from './memory';
+import { accessFromEnv } from './access.js';
+import { createApp } from './index.js';
+import { createMemory } from './memory.js';
 
 export function appFromEnv(env: NodeJS.ProcessEnv, target: 'local' | 'cloud') {
   const policy = accessFromEnv(env, target);

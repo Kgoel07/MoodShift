@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { RequestHandler } from 'express';
-import { installationIdPattern } from '../../extension/src/shared/preferences';
+import { installationIdPattern } from '../../extension/src/shared/preferences.js';
 
 export const extensionOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
 const tokenFormat = /^[A-Za-z0-9_-]{32,128}$/;

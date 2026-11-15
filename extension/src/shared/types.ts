@@ -1,4 +1,4 @@
-import { clampPatch, effectKeys, type AudioEffectState, type EffectPatch } from './effects';
+import { clampPatch, effectKeys, type AudioEffectState, type EffectPatch } from './effects.js';
 
 export interface SourceTab {
   tabId: number;

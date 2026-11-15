@@ -1,8 +1,8 @@
 import express, { type ErrorRequestHandler } from 'express';
-import { interpret, ProxyError, type ModelConfig } from './interpret';
-import { requestSchema } from './schema';
-import { MemoryError, memoryRequest, type Memory } from './memory';
-import { demoGuard, extensionOrigin, type AccessPolicy } from './access';
+import { interpret, ProxyError, type ModelConfig } from './interpret.js';
+import { requestSchema } from './schema.js';
+import { MemoryError, memoryRequest, type Memory } from './memory.js';
+import { demoGuard, extensionOrigin, type AccessPolicy } from './access.js';
 
 export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, memory?: Memory,
   policy: AccessPolicy = { mode: 'local' }) {
