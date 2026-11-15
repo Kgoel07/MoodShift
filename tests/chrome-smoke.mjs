@@ -1,28 +1,28 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { rm, mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { cp, rm, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 
 const testDir = resolve('.moodshift-test');
 await mkdir(testDir, { recursive: true });
 const profile = await mkdtemp(resolve(testDir, 'profile-'));
-const chrome = spawn(process.env.MOODSHIFT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', [
-  '--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
-  '--user-data-dir=' + profile,
-  '--remote-debugging-pipe', '--enable-unsafe-extension-debugging', 'about:blank',
-], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true });
-const chromeExited = new Promise(done => {
-  chrome.once('exit', done);
-  chrome.once('error', error => { console.error(error.message); done(); });
-});
-chrome.stdio[3].on('error', () => undefined);
-chrome.stderr.on('data', data => {
-  if (process.env.CHROME_TEST_DEBUG) process.stderr.write(data);
-});
 const stemTest = Boolean(process.env.MOODSHIFT_STEM_TEST);
 const stemYouTube = Boolean(process.env.MOODSHIFT_STEM_YOUTUBE);
+const stemPort = process.env.MOODSHIFT_STEM_TEST_PORT;
+let extensionPath = resolve('extension/dist');
+if (stemPort) {
+  assert.match(stemPort, /^[1-9][0-9]{3,4}$/);
+  assert.ok(Number(stemPort) <= 65535 && !['8787', '8788'].includes(stemPort));
+  const isolatedPath = resolve(profile, 'isolated-extension');
+  await cp(extensionPath, isolatedPath, { recursive: true });
+  const workerPath = resolve(isolatedPath, 'stem-worker.js');
+  const workerCode = await readFile(workerPath, 'utf8');
+  assert.ok(workerCode.includes('ws://127.0.0.1:8788'));
+  await writeFile(workerPath, workerCode.replace('ws://127.0.0.1:8788', 'ws://127.0.0.1:' + stemPort));
+  extensionPath = isolatedPath;
+}
 const stemFixture = stemTest && !stemYouTube ? await readFile('.stem-gate/assets/fixture.ogg') : undefined;
 let helper;
 const fixture = createServer((req, res) => {
@@ -44,15 +44,38 @@ const url = 'http://127.0.0.1:' + fixture.address().port;
 let lastId = 0;
 let data = '';
 const requests = new Map();
-chrome.stdio[4].on('data', chunk => {
-  data += chunk.toString();
-  let end;
-  while ((end = data.indexOf('\0')) !== -1) {
-    const value = JSON.parse(data.slice(0, end));
-    data = data.slice(end + 1);
-    requests.get(value.id)?.(value);
-  }
-});
+function launchChrome() {
+  const processHandle = spawn(process.env.MOODSHIFT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', [
+    '--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
+    '--user-data-dir=' + profile,
+    '--remote-debugging-pipe', '--enable-unsafe-extension-debugging', 'about:blank',
+  ], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true });
+  const exited = new Promise(done => {
+    processHandle.once('exit', done);
+    processHandle.once('error', error => { console.error(error.message); done(); });
+  });
+  processHandle.stdio[3].on('error', () => undefined);
+  processHandle.stderr.on('data', chunk => {
+    if (process.env.CHROME_TEST_DEBUG) process.stderr.write(chunk);
+  });
+  data = '';
+  processHandle.stdio[4].on('data', chunk => {
+    data += chunk.toString();
+    let end;
+    while ((end = data.indexOf('\0')) !== -1) {
+      const value = JSON.parse(data.slice(0, end));
+      data = data.slice(end + 1);
+      requests.get(value.id)?.(value);
+    }
+  });
+  return [processHandle, exited];
+}
+let [chrome, chromeExited] = launchChrome();
+async function closeChrome() {
+  await send('Browser.close').catch(() => undefined);
+  if (!await Promise.race([chromeExited.then(() => true), wait(3000, false)])) chrome.kill();
+  await chromeExited;
+}
 function send(method, params = {}, sessionId) {
   const id = ++lastId;
   return new Promise((resolve, reject) => {
@@ -98,16 +121,45 @@ async function until(read, accept, label, attempts = 24) {
   }
   throw new Error(label + ': ' + JSON.stringify(result));
 }
+
+async function startStemHelper(extensionId) {
+  const args = stemPort
+    ? ['-c', 'import sys; from scripts import stem_helper as helper; helper.PORT = int(sys.argv.pop(1)); helper.main()', stemPort]
+    : ['-m', 'scripts.stem_helper'];
+  helper = spawn(process.env.MOODSHIFT_STEM_PYTHON ?? '.stem-gate/venv/Scripts/python.exe',
+    [...args, '--extension-id', extensionId, '--device', process.env.MOODSHIFT_STEM_DEVICE ?? '1'],
+    { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let helperLog = '';
+  helper.stdout.on('data', data => { helperLog += data.toString(); });
+  helper.stderr.on('data', data => { helperLog += data.toString(); });
+  helper.on('error', error => { helperLog += error.message; });
+  await until(() => helperLog, log => log.includes('helper ready'), 'Stem helper startup', 80);
+}
+
+async function stopStemHelper() {
+  if (!helper?.pid || helper.exitCode !== null || helper.signalCode !== null) return;
+  const exited = new Promise(resolve => helper.once('exit', resolve));
+  if (process.platform === 'win32') {
+    const task = spawn('taskkill.exe', ['/PID', String(helper.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    await new Promise(resolve => {
+      task.once('exit', resolve);
+      task.once('error', resolve);
+    });
+  } else helper.kill();
+  if (!await Promise.race([exited.then(() => true), wait(3000, false)])) helper.kill();
+  helper = undefined;
+}
+
 try {
   console.log((await send('Browser.getVersion')).product);
-  const { id } = await send('Extensions.loadUnpacked', { path: resolve('extension/dist') });
+  const { id } = await send('Extensions.loadUnpacked', { path: extensionPath });
   const origin = 'chrome-extension://' + id;
   const worker = await find(t => t.type === 'service_worker' && t.url.startsWith(origin), 'worker');
   let sw = await attach(worker.targetId);
   const { targetId } = await send('Target.createTarget', { url, forTab: true });
   const page = await find(t => t.type === 'page' && t.url === url + '/', 'source page');
   const source = await attach(page.targetId);
-  await wait(300);
+  await until(() => evaluate(source, "Boolean(document.querySelector('button'))"), Boolean, 'Tone player');
   await evaluate(source, "document.querySelector('button').click(); tone.resume()");
   await send('Extensions.triggerAction', { id, targetId });
   const read = "chrome.runtime.sendMessage({target:'audio', type:'READ'})";
@@ -131,6 +183,14 @@ try {
     await click('Original');
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.monitor, 'original');
+    if (process.env.MOODSHIFT_PRESETS_TEST) {
+      await evaluate(view, `document.querySelector('#saved-presets').open = true;
+        const name = document.querySelector('#saved-preset-name');
+        name.value = 'Restart preset'; name.dispatchEvent(new Event('input'));
+        document.querySelector('#saved-preset-save').click()`);
+      await until(() => evaluate(view, "document.querySelector('#saved-preset-status').textContent"),
+        status => status === 'Preset saved.', 'Saving exact preset');
+    }
     await click('Modified');
     await click('Reset');
     await wait(350);
@@ -174,6 +234,68 @@ try {
       assert.equal(staleRevision.ok, false);
       console.log('Gemini failure, unsupported response and stale edit checks passed.');
     }
+    if (process.env.MOODSHIFT_MEMORY_TEST) {
+      const status = () => evaluate(view, "document.querySelector('#memory-status').textContent");
+      const feedback = () => evaluate(view, "document.querySelector('#feedback').textContent");
+      const submit = prompt => evaluate(view, `(() => {
+        const field = document.querySelector('#prompt');
+        field.value = ${JSON.stringify(prompt)};
+        field.dispatchEvent(new Event('input'));
+        document.querySelector('#interpret').requestSubmit();
+      })()`);
+      const memory = id => evaluate(view, `document.querySelector('#memory-${id}').click()`);
+      await evaluate(view, `document.querySelector('#personalization').open = true;
+        window.memoryCalls = [];
+        window.preferenceList = [];
+        window.fetch = async (url, options) => {
+          const data = JSON.parse(options.body);
+          window.memoryCalls.push(data);
+          if (url.endsWith('/api/interpret')) {
+            return Response.json({ mode: 'patch', patch: { bassDb: data.personalization ? -5 : -6 }, summary: 'Reduced bass.', unsupported: [] });
+          }
+          if (data.action === 'remember') {
+            window.preferenceList.push(data.preference);
+            return Response.json({ remembered: true, processing: false });
+          }
+          if (data.action === 'view') return Response.json({ preferences: window.preferenceList });
+          if (!window.allowClear) return Response.json({ error: 'Supermemory did not confirm deletion.' }, { status: 502 });
+          window.preferenceList = [];
+          return Response.json({ cleared: true });
+        }`);
+      assert.equal(await evaluate(view, "document.querySelector('#memory-enabled').checked"), false);
+      await memory('enabled');
+      await until(status, text => text === 'Personalization enabled.', 'Local personalization enable');
+      await submit('Remember that I like warmer bass.');
+      await until(status, text => text === 'Preference saved to Supermemory.', 'Explicit preference prompt');
+      await evaluate(view, `(() => {
+        const field = document.querySelector('#memory-preference');
+        field.value = 'I like moderate reverb.'; field.dispatchEvent(new Event('input'));
+        document.querySelector('#memory-form').requestSubmit();
+      })()`);
+      await until(status, text => text === 'Preference saved to Supermemory.', 'Explicit preference form');
+      await memory('view');
+      await until(status, text => text === 'Preferences from Supermemory.', 'Remote preferences view');
+      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 2);
+      await submit('Remove all bass.');
+      await until(feedback, text => text.startsWith('Applied ✓'), 'Personalized Gemini ACK');
+      const calls = await evaluate(view, 'window.memoryCalls');
+      assert.deepEqual(calls.map(call => call.action ?? 'interpret'), ['remember', 'remember', 'view', 'interpret']);
+      assert.equal(calls[3].personalization.installationId, calls[0].installationId);
+      assert.equal(calls[3].personalization.enabled, true);
+      await memory('enabled');
+      await until(status, text => text.startsWith('Personalization disabled.'), 'Local personalization disable');
+      await submit('Remove all bass.');
+      await until(feedback, text => text.startsWith('Applied ✓'), 'Ordinary Gemini ACK');
+      assert.equal(await evaluate(view, "'personalization' in window.memoryCalls.at(-1)"), false);
+      await memory('clear');
+      await until(status, text => text === 'Supermemory did not confirm deletion.', 'Remote failure keeps list');
+      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 2);
+      await evaluate(view, 'window.allowClear = true');
+      await memory('clear');
+      await until(status, text => text === 'Supermemory confirmed remote preferences were cleared.', 'Remote clear ACK');
+      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 0);
+      console.log('Personalization opt-in, explicit saves, view, Gemini context, opt-out and remote clear passed with mock providers.');
+    }
   }
   await send('Extensions.triggerAction', { id, targetId });
   await wait(400);
@@ -183,6 +305,7 @@ try {
     const secondTab = await send('Target.createTarget', { url: second, forTab: true });
     const secondPage = await find(t => t.url === second, 'second tone tab');
     const secondSession = await attach(secondPage.targetId);
+    await until(() => evaluate(secondSession, "Boolean(document.querySelector('button'))"), Boolean, 'Second tone player');
     await evaluate(secondSession, "document.querySelector('button').click(); tone.resume()");
     assert.equal((await evaluate(sw, read)).status.session.id, capture.status.session.id);
     await send('Extensions.triggerAction', { id, targetId: secondTab.targetId });
@@ -210,6 +333,151 @@ try {
   assert.equal((await evaluate(sw, read)).status.phase, 'ready');
   assert.equal((await evaluate(sw, 'chrome.tabCapture.getCapturedTabs()')).find(tab => tab.tabId === current.session.tabId)?.status, 'stopped');
   console.log('Local tone, DSP controls, tab switching and Stop checks passed.');
+  if (process.env.MOODSHIFT_CHORDS_TEST) {
+    const songUrl = 'https://www.youtube.com/watch?v=PqJNc9KVIZE';
+    const { targetId: songTab } = await send('Target.createTarget', { url: songUrl, forTab: true });
+    const track = await find(t => t.url === songUrl, 'Songle example YouTube tab');
+    const song = await attach(track.targetId);
+    const readMedia = () => evaluate(song, `(() => {
+      const player = document.querySelector('#movie_player');
+      return { duration: player?.querySelector('video')?.duration, ad: player?.classList.contains('ad-showing') };
+    })()`);
+    await until(readMedia, state => state.duration > 260 && state.duration < 285 && !state.ad, 'Songle example YouTube source', 80);
+    await evaluate(song, "document.querySelector('#movie_player video').play().catch(() => undefined)");
+    await send('Extensions.triggerAction', { id, targetId: songTab });
+    const chordsPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'chords side panel')).targetId);
+    const openChords = () => evaluate(chordsPanel, "document.querySelector('#chords').open = true");
+    const readChords = () => evaluate(chordsPanel, `({
+      status: document.querySelector('#chords-status').textContent,
+      current: document.querySelector('#chord-current').textContent,
+      next: document.querySelector('#chord-next').textContent,
+      keyboard: Boolean(document.querySelector('.chord-piano')),
+      guitar: Boolean(document.querySelector('.chord-guitar')),
+    })`);
+    await openChords();
+    await until(readChords, value => value.status === 'Songle · Estimated chords', 'Live Songle timeline', 40);
+    async function seek(position, rate = 1) {
+      await evaluate(song, `(() => {
+        const video = document.querySelector('#movie_player video');
+        video.pause(); video.playbackRate = ${rate}; video.currentTime = ${position};
+      })()`);
+    }
+    const setOffset = offset => evaluate(chordsPanel, `(() => {
+      const input = document.querySelector('#lyrics-offset'); input.value = ${JSON.stringify(String(offset))};
+      input.dispatchEvent(new Event('change'));
+    })()`);
+    await seek(13.5);
+    await until(readChords, value => value.current === 'Eb' && value.next === 'Eb/Ab' && value.keyboard && value.guitar, 'Diagrams and next chord');
+    await seek(17);
+    await until(readChords, value => value.current === 'Eb/Ab', 'Forward chord seek');
+    await seek(16, 2);
+    await setOffset(1);
+    await until(readChords, value => value.current === 'Eb', 'Rate-adjusted chord offset');
+    await setOffset(0);
+    await seek(13.5);
+    await until(readChords, value => value.current === 'Eb', 'Backward chord seek');
+    assert.ok(await evaluate(chordsPanel, "chrome.storage.local.get('songleChordCacheV1').then(values => values.songleChordCacheV1?.PqJNc9KVIZE?.result?.events.length > 20)"));
+    await evaluate(chordsPanel, "document.querySelector('#stop').click()");
+    await until(readChords, value => value.status.startsWith('Select a YouTube'), 'Chord status cleared after Stop');
+    console.log('Live Songle timeline, diagrams, pause/seek, playback rate, shared offset, cache and Stop passed on its documented YouTube example.');
+  }
+  if (process.env.MOODSHIFT_LYRICS_TEST) {
+    const songUrl = 'https://www.youtube.com/watch?v=AEBld6I_AKs';
+    const { targetId: songTab } = await send('Target.createTarget', { url: songUrl, forTab: true });
+    const track = await find(t => t.url === songUrl, 'lyrics YouTube tab');
+    const song = await attach(track.targetId);
+    const readMedia = () => evaluate(song, `(() => {
+      const player = document.querySelector('#movie_player');
+      const video = player?.querySelector('video');
+      return { duration: video?.duration, ad: player?.classList.contains('ad-showing') };
+    })()`);
+    const media = await until(readMedia, result => result.duration > 180 && result.duration < 210 && !result.ad,
+      'Expected YouTube recording to load', 60);
+    await evaluate(song, "document.querySelector('#movie_player video').play().catch(() => undefined)");
+    await send('Extensions.triggerAction', { id, targetId: songTab });
+    const capture = await until(async () => (await evaluate(sw, read)).status,
+      state => state.phase === 'capturing' && state.session.title.includes('Code Monkey'), 'Lyrics capture');
+    const lyricsView = async () => attach((await find(t => t.url === origin + '/sidepanel.html', 'lyrics side panel')).targetId);
+    let lyricsPanel = await lyricsView();
+    const readLyrics = () => evaluate(lyricsPanel, `({
+      title: document.querySelector('#lyrics-title')?.value ?? '',
+      artist: document.querySelector('#lyrics-artist')?.value ?? '',
+      status: document.querySelector('#lyrics-status')?.textContent ?? '',
+      count: document.querySelector('#lyrics-viewport')?.childElementCount ?? 0,
+    })`);
+    const synced = state => state.title === 'Code Monkey' && state.artist === 'Jonathan Coulton'
+      && state.status === 'Synchronized lyrics' && state.count > 2;
+    await until(readLyrics, synced, 'LRCLIB synchronized result for YouTube duration ' + media.duration, 56);
+    const highlighted = () => evaluate(lyricsPanel,
+      "Array.from(document.querySelector('#lyrics-viewport').children).findIndex(line => line.hasAttribute('aria-current'))");
+    async function seek(position) {
+      await evaluate(song, `(() => { const video = document.querySelector('#movie_player video'); video.pause(); video.currentTime = ${position}; })()`);
+    }
+    await seek(22);
+    const firstLine = await until(highlighted, line => line > 4, 'Active lyric at 22 seconds');
+    await wait(1000);
+    assert.equal(await highlighted(), firstLine);
+    await seek(50);
+    const secondLine = await until(highlighted, line => line > firstLine, 'Active lyric after forward seek');
+    await evaluate(lyricsPanel, "const control = document.querySelector('#lyrics-offset'); control.value = '10'; control.dispatchEvent(new Event('input')); control.dispatchEvent(new Event('change'))");
+    await until(highlighted, line => line >= 0 && line < secondLine, 'Offset moves highlight earlier in the song');
+    await evaluate(song, "document.querySelector('#movie_player video').playbackRate = 0.5");
+    await evaluate(lyricsPanel, "control.value = '0'; control.dispatchEvent(new Event('change'))");
+    await until(highlighted, line => line === secondLine, 'Playback-rate and offset changes');
+
+    const windowId = await evaluate(sw, 'chrome.tabs.get(' + capture.session.tabId + ').then(tab => tab.windowId)');
+    await evaluate(sw, 'chrome.sidePanel.close({windowId:' + windowId + '})');
+    await until(async () => (await send('Target.getTargets')).targetInfos.some(t => t.url === origin + '/sidepanel.html'),
+      present => !present, 'Lyrics panel closed');
+    await send('Extensions.triggerAction', { id, targetId: songTab });
+    lyricsPanel = await lyricsView();
+    await until(readLyrics, synced, 'Lyrics restored after panel reopen');
+    assert.equal((await evaluate(sw, read)).status.session.id, capture.session.id);
+    assert.equal(await highlighted(), secondLine);
+    console.log('Live LRCLIB synchronized lyrics, title/artist, pause, seek, playback rate, offset and panel reopen passed.');
+
+    await evaluate(lyricsPanel, "Array.from(document.querySelectorAll('button')).find(button => button.textContent === 'Dreamy').click()");
+    await until(async () => (await evaluate(sw, read)).status.effects?.reverbMix,
+      reverb => reverb === 0.33, 'Audio preset remains available');
+
+    if (process.env.MOODSHIFT_LYRICS_STEMS) {
+      await startStemHelper(id);
+      await evaluate(song, "document.querySelector('#movie_player video').play().catch(() => undefined)");
+      await evaluate(lyricsPanel, "document.querySelector('[data-stem=instrumental]').click()");
+      await until(async () => (await evaluate(sw, read)).status.stem?.phase, phase => phase === 'active',
+        'Instrumental stem with lyrics', 36);
+      assert.ok(await highlighted() >= 0);
+      await evaluate(lyricsPanel, "document.querySelector('[data-stem=full]').click()");
+      await until(async () => (await evaluate(sw, read)).status.stem?.mode, mode => mode === 'full',
+        'Returned to full mix');
+      await stopStemHelper();
+      console.log('Lyrics and active instrumental stem ran on the same YouTube capture.');
+    }
+
+    const beforeNavigation = await evaluate(song, 'performance.timeOrigin');
+    const related = JSON.stringify('#related a[href^="/watch?v="]:not([href*="AEBld6I_AKs"])');
+    await until(() => evaluate(song, `Boolean(document.querySelector(${related}))`),
+      Boolean, 'YouTube watch recommendation');
+    await evaluate(song, `document.querySelector(${related}).click()`);
+    await until(() => evaluate(song, 'location.href'), url => !url.includes('AEBld6I_AKs'), 'YouTube video changed');
+    assert.equal(await evaluate(song, 'performance.timeOrigin'), beforeNavigation);
+    await until(async () => ({
+      ...(await readLyrics()),
+      page: await evaluate(song, `({
+        url: location.href, title: document.querySelector('ytd-watch-metadata h1')?.textContent?.trim(),
+        videoId: document.querySelector('ytd-watch-flexy')?.getAttribute('video-id'),
+        duration: document.querySelector('#movie_player video')?.duration,
+        ad: document.querySelector('#movie_player')?.classList.contains('ad-showing'),
+      })`),
+    }), state => state.title !== 'Code Monkey' && state.title.length > 0,
+    'New in-tab song did not replace lyrics metadata', 64);
+    assert.equal((await evaluate(sw, read)).status.session.id, capture.session.id);
+    console.log('YouTube in-tab navigation replaced the song without restarting capture.');
+
+    await evaluate(lyricsPanel, "document.querySelector('#stop').click()");
+    await until(async () => (await evaluate(sw, read)).status.phase, phase => phase === 'ready', 'Lyrics capture stopped');
+    await until(readLyrics, state => state.count === 0, 'Lyrics cleared after Stop');
+  }
   if (stemTest) {
     const stemUrl = stemYouTube ? 'https://www.youtube.com/watch?v=OEAowPzDnaw' : url + '/stems';
     const stemTitle = stemYouTube ? 'Making Me Nervous' : 'vocal and guitar';
@@ -247,14 +515,7 @@ try {
     await until(stemState, stem => stem.phase === 'unavailable', 'Missing-helper fallback');
     assert.doesNotMatch(await feedback(), /Applied/);
 
-    helper = spawn(process.env.MOODSHIFT_STEM_PYTHON ?? '.stem-gate/venv/Scripts/python.exe',
-      ['-m', 'scripts.stem_helper', '--extension-id', id, '--device', process.env.MOODSHIFT_STEM_DEVICE ?? '1'],
-      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    let helperLog = '';
-    helper.stdout.on('data', data => { helperLog += data.toString(); });
-    helper.stderr.on('data', data => { helperLog += data.toString(); });
-    helper.on('error', error => { helperLog += error.message; });
-    await until(() => helperLog, log => log.includes('helper ready'), 'Stem helper startup', 80);
+    await startStemHelper(id);
     const offscreen = await find(t => t.url === origin + '/offscreen.html', 'stem audio document');
     const audio = await attach(offscreen.targetId);
     await evaluate(audio, `(() => {
@@ -305,6 +566,28 @@ try {
     assert.equal(combined.effects.bassDb, capture.effects.bassDb);
     if (realGemini) console.log('Live Gemini prompt applied the instrumental stem and reverb in Chrome.');
     if (stemYouTube) console.log('Real YouTube tab produced both stem signals:', powers);
+    if (process.env.MOODSHIFT_PRESETS_TEST) {
+      const presetStatus = () => evaluate(panelView, "document.querySelector('#saved-preset-status').textContent");
+      await evaluate(panelView, `(() => {
+        document.querySelector('#saved-presets').open = true;
+        const name = document.querySelector('#saved-preset-name');
+        name.value = 'Instrumental preset'; name.dispatchEvent(new Event('input'));
+        document.querySelector('#saved-preset-save').click();
+      })()`);
+      await until(presetStatus, status => status === 'Preset saved.', 'Save active Instrumental');
+      await click('Full mix');
+      await until(stemState, stem => stem.mode === 'full', 'Full mix before restore');
+      await click('Reset');
+      await until(() => evaluate(panelView, "!document.querySelector('#saved-preset-apply').disabled"),
+        Boolean, 'Saved preset ready after reset');
+      await evaluate(panelView, "document.querySelector('#saved-preset-apply').click()");
+      await until(presetStatus, status => status === 'Applied ✓ · Instrumental preset', 'Restore requested Instrumental');
+      const restored = (await evaluate(sw, read)).status;
+      assert.deepEqual(restored.effects, combined.effects);
+      assert.equal(restored.stem.mode, 'instrumental');
+      assert.equal(restored.monitor, combined.monitor);
+      console.log('Saved preset restored exact live DSP settings and active Instrumental.');
+    }
     if (process.env.MOODSHIFT_STEM_SUSTAIN) {
       const position = () => evaluate(player, `document.querySelector('${media}').currentTime`);
       const start = await position();
@@ -331,7 +614,7 @@ try {
       state => state.phase === 'capturing' && state.session.tabId === capture.session.tabId, 'Recapture stem source');
     await click('Vocals');
     await until(stemState, stem => stem.phase === 'active' && stem.mode === 'vocals', 'Reconnected helper after tab switch');
-    helper.kill();
+    await stopStemHelper();
     await until(stemState, stem => stem.phase === 'unavailable', 'Helper-disconnect fallback');
     const recovered = (await evaluate(sw, read)).status;
     assert.equal(recovered.session.id, resumedCapture.session.id);
@@ -411,8 +694,41 @@ try {
     await send('Target.closeTarget', { targetId: backgroundPage });
     console.log('YouTube signal, Dreamy ACK, uninterrupted playhead, background capture, panel reopen and Stop passed.');
   }
+  if (process.env.MOODSHIFT_PRESETS_TEST) {
+    await closeChrome();
+    [chrome, chromeExited] = launchChrome();
+    const reloaded = await send('Extensions.loadUnpacked', { path: extensionPath });
+    assert.equal(reloaded.id, id);
+    const restarted = await send('Target.createTarget', { url: url + '/?restarted', forTab: true });
+    const restartedPage = await find(t => t.type === 'page' && t.url === url + '/?restarted', 'restarted tone page');
+    const restartedSource = await attach(restartedPage.targetId);
+    await until(() => evaluate(restartedSource, "Boolean(document.querySelector('button'))"), Boolean, 'Restarted tone player');
+    await evaluate(restartedSource, "document.querySelector('button').click(); tone.resume()");
+    await send('Extensions.triggerAction', { id, targetId: restarted.targetId });
+    const restartedPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'restarted side panel')).targetId);
+    const readStatus = () => evaluate(restartedPanel, "chrome.runtime.sendMessage({target:'worker',type:'GET_STATUS'})");
+    await until(readStatus, reply => reply.status.phase === 'capturing', 'Restarted capture');
+    assert.equal((await readStatus()).status.effects.reverbMix, 0);
+    await until(() => evaluate(restartedPanel,
+      "[...document.querySelector('#saved-preset-list').options].find(option => option.text === 'Restart preset')?.value"),
+      Boolean, 'Preset persisted across Chrome restart');
+    await evaluate(restartedPanel, `document.querySelector('#saved-presets').open = true;
+      window.fetch = () => { throw new Error('Preset restore must work offline'); };
+      const select = document.querySelector('#saved-preset-list');
+      select.value = [...select.options].find(option => option.text === 'Restart preset').value;
+      select.dispatchEvent(new Event('change'));
+      document.querySelector('#saved-preset-apply').click()`);
+    await until(() => evaluate(restartedPanel, "document.querySelector('#saved-preset-status').textContent"),
+      status => status === 'Applied ✓ · Restart preset', 'Offline preset ACK');
+    const saved = (await readStatus()).status;
+    assert.equal(saved.effects.reverbMix, 0.33);
+    assert.equal(saved.effects.trebleDb, -2);
+    assert.equal(saved.monitor, 'original');
+    assert.equal(saved.stem.mode, 'full');
+    console.log('Saved preset persisted across Chrome restart and restored exact DSP settings and monitor offline.');
+  }
 } finally {
-  helper?.kill();
+  await stopStemHelper();
   await send('Browser.close').catch(() => undefined);
   chrome.kill();
   await chromeExited;

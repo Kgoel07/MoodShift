@@ -1,5 +1,10 @@
 import { statusChanged, toAudio, type Reply, type WorkerMessage } from './shared/messages';
 import type { CaptureStatus, SourceTab } from './shared/types';
+import { installLyricsLookup } from './lyrics-provider';
+import { installChordLookup } from './chords-provider';
+
+installLyricsLookup();
+installChordLookup();
 
 const offscreenUrl = chrome.runtime.getURL('offscreen.html');
 let creating: Promise<void> | undefined;

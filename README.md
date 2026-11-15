@@ -13,6 +13,45 @@ MoodShift applies live EQ, filters, reverb, echo, and distortion to one selected
 
 Open the panel from Chrome’s side panel menu to inspect the existing session. Use the toolbar icon on a different source tab to switch capture. **Reset** restores neutral values for the current session. Select **Modified** to hear the effects after comparing with Original.
 
+## Synchronized YouTube lyrics
+
+Build or reload MoodShift, then reload the YouTube watch page so Chrome injects the new content script. Start a song and click the MoodShift icon on that tab. The **Lyrics** section uses the selected player’s position, pause state and playback rate. It follows the active line through seeks and YouTube’s in-tab video changes. Scroll the lyrics at any time and re-enable **Follow playback** to return to the active line.
+
+Edit **Song Title** and **Artist** and click **Search lyrics** if YouTube identifies the song incorrectly. MoodShift looks for matching title and artist and checks that the recording’s duration is within two seconds. It shows plain lyrics when an otherwise matching record has no timing. Different edits, live performances, and ambiguous results may have no verified match. [LRCLIB API](https://lrclib.net/docs)
+
+**Lyric offset** starts at `0` and applies to both lyrics and chord highlights. Use a positive value to delay them and a negative value to advance them. With delayed stem playback, try `+2.8` seconds and adjust by ear. Original and Full Mix usually need less offset. The offset persists locally.
+
+Lyrics work without Gemini or the stem helper. MoodShift sends only the song title and artist to LRCLIB. The extension caches recent lookup results and song corrections for the current Chrome session.
+
+To smoke-test in Chrome, open Jonathan Coulton’s “Code Monkey,” click MoodShift, and wait for **Synchronized lyrics**. Pause and seek, change the playback speed, then open another recommendation in the same tab. If an ad plays, the panel can identify the new song while waiting for the song’s clock. [Official YouTube track](https://www.youtube.com/watch?v=AEBld6I_AKs)
+
+To repeat the automated Chrome check after building, run `$env:MOODSHIFT_LYRICS_TEST='1'; node tests/chrome-smoke.mjs` in PowerShell. Add `$env:MOODSHIFT_LYRICS_STEMS='1'` to test an active stem alongside lyrics with the optional Windows helper.
+
+## Synchronized YouTube chords
+
+1. Open the YouTube watch page used in the Songle API example, start playback, and click MoodShift on that tab. Open **Chords**. Wait for **Songle · Estimated chords**. [YouTube example](https://www.youtube.com/watch?v=PqJNc9KVIZE)
+2. At about 13.5 seconds, look for **Eb**, then **Eb/Ab** under **Next**. Pause and seek to 17 seconds, then seek backward. Click a chord in the progression to inspect its guitar and piano diagrams. Click it again to follow the current chord. Supported diagrams are based on local tables.
+3. Change the YouTube rate and adjust **Lyric offset (s)** in **Lyrics** to change both highlights. Switch videos or click **Stop processing** to clear the current chord.
+
+MoodShift sends the exact YouTube watch URL to Songle when you open **Chords**. It caches successful results locally for up to seven days and keeps up to 16 videos. Songle covers registered recordings. A missing recording has no progression, and an outage shows a retry control. The integration is for noncommercial use and the original video plays directly from YouTube. [Songle chord API](https://widget.songle.jp/docs/v1?lang=en) · [Songle Widget terms](https://widget.songle.jp/docs/terms-of-use) · [Songle terms](https://api.songle.jp/terms_of_use.pdf)
+
+## My Presets
+
+1. Capture a playing tab and adjust effects, the stem mode, and Original or Modified. Open **My Presets**, enter a name and an optional description, and click **Save Preset**.
+2. Select another playing tab with the toolbar icon. Pick the saved preset and click **Apply Preset**. MoodShift waits for the audio engine to acknowledge the stored settings. If the requested stem helper is unavailable, the panel reports the partial result.
+3. Change the mix, then use **Update Preset** to replace the saved audio settings. Edit the text fields and use **Rename** to save the name and description. Use **Delete** to remove that preset. Close and reopen Chrome to check that the preset is still in the list.
+
+Saved presets are shared across songs in the same Chrome profile. They use local Chrome extension storage and work without Gemini or Supermemory. An active capture is needed to save, update the audio settings, or apply a preset.
+
+## Optional personalization
+
+1. Set `SUPERMEMORY_API_KEY` in `server/.env` and restart `npm run dev:server`. Use an organization admin or owner key with namespace write access to clear preferences from the panel. Keep both API keys in `server/.env`. [Supermemory console](https://console.supermemory.ai/) · [Namespace permissions](https://supermemory.ai/docs/concepts/container-tags)
+2. Open **Personalization** and check **Use remembered sound preferences**. Enter a short preference such as “I prefer strong bass” and click **Remember preference**. You can also submit “Remember that I prefer strong bass” or “I usually prefer warmer bass” through the main prompt.
+3. Click **View preferences** after indexing. The panel shows up to 30 indexed entries. Ask Gemini “Make this song sound better,” then “Remove all bass.” The second request explicitly sets the direction even when the stored preference favors bass.
+4. Turn personalization off to stop preference lookups. **Clear remote preferences** requests deletion of the installation’s Supermemory namespace and waits for acknowledgment. You can view and clear remote preferences with personalization disabled. Clear remote preferences before uninstalling or deleting the Chrome profile if you intend to erase them. [Supermemory deletion and retention](https://supermemory.ai/security/#retention-and-deletion)
+
+Personalization starts disabled. A random installation ID in local Chrome storage scopes the remote namespace across browser restarts. MoodShift sends explicit preference text to Supermemory and retrieves a small profile context for opted-in Gemini prompts. Ordinary prompts go to Gemini. Supermemory receives only the preference text and a namespace derived from the installation ID. A missing key, slow lookup, or service outage leaves regular Gemini interpretation available. The proxy is a single-user localhost service. Its installation ID identifies a namespace and provides no authentication. Public deployment would require authentication and authorization before exposing these routes.
+
 ## Optional live stems on Windows
 
 **Instrumental** and **Vocals** use the local MDX-Net helper. It was benchmarked on an RTX 3070 Laptop GPU with DirectML. The helper checks startup throughput for both 44.1 and 48 kHz before accepting audio. CPU-only playback missed the deadline in testing. The stem helper and Gemini proxy run independently.
@@ -83,9 +122,11 @@ Use authorized audio. A Creative Commons option is Kevin MacLeod’s “Carefree
 
 - The worker coordinates the toolbar, session selection and metadata. The offscreen document owns the live audio track, one Web Audio graph, and current settings. Start uses Chrome’s worker-to-offscreen stream ID flow. [Chrome capture guide](https://developer.chrome.com/docs/extensions/how-to/web-platform/screen-capture)
 - The settings in `extension/src/shared/effects.ts` define the effect ranges, defaults, and presets. Original and Modified share the same output. Modified uses neutral filter bypasses and a conservative limiter. Updates ramp over roughly 300 ms.
-- Each submitted prompt sends text, current effect values, and a two-second summary of RMS and frequency bands to the loopback proxy. The proxy sends those fields to Gemini. Audio samples, tab titles, and URLs stay out of the request. Summary metrics describe signal levels and frequency balance. The proxy validates Gemini’s structured patches and reports unsupported requests. [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output)
+- Each effect prompt sends text, current effect values, and a two-second summary of RMS and frequency bands to the loopback proxy. It sends those fields and any opted-in preference context to Gemini. Audio samples, tab titles, and URLs stay out of the Gemini request. The proxy validates Gemini’s structured patches and reports unsupported requests. [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output)
 - MoodShift processes the selected Chrome tab. Desktop apps, system-wide audio, tempo and pitch changes, instrument replacement, and recording are outside the project scope.
 
 ## Repeat the browser smoke test
 
 After building, run `node tests/chrome-smoke.mjs` with current desktop Chrome installed. The script uses a disposable headless profile and a locally generated tone. On PowerShell, set `$env:MOODSHIFT_YOUTUBE_TEST='1'` before the command to add the YouTube check. Also set `$env:MOODSHIFT_WORKER_TEST='1'` to wait for the worker to go idle during YouTube playback. Set `MOODSHIFT_CHROME_PATH` to the Chrome executable if it is installed outside the default Windows location. This test checks capture and state programmatically. Use the listening checklist to assess audio quality and direct speaker output.
+
+Set `MOODSHIFT_CHORDS_TEST=1` to exercise the live Songle timeline, `MOODSHIFT_PRESETS_TEST=1` to verify exact restoration across a Chrome restart, and `MOODSHIFT_MEMORY_TEST=1` to exercise the personalization controls with mocked provider responses. If another MoodShift session is using the stem helper, set `MOODSHIFT_STEM_TEST_PORT` to a free port such as `18788`. The test uses a disposable copy of the bundled extension and starts a separate helper on that port.

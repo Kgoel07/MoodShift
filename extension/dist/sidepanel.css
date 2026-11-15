@@ -75,11 +75,73 @@ button:disabled { opacity: .55; cursor: default; }
 .preset-section { margin: 19px 0 17px; }
 #presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 #presets button { font-size: 12px; padding-inline: 9px; }
+#saved-presets { margin: -8px 0 14px; }
+.saved-preset-fields { display: grid; gap: 3px; font-size: 12px; }
+.saved-preset-fields input, .saved-preset-fields select {
+  min-width: 0;
+  margin-bottom: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.saved-preset-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 5px 0 8px; font-size: 12px; }
+#saved-preset-status, #saved-preset-notice { color: var(--muted); font-size: 11px; margin-bottom: 5px; overflow-wrap: anywhere; }
+#personalization > label, #memory-list { font-size: 12px; }
+#memory-enabled { accent-color: var(--accent); }
+#memory-help, #memory-status { color: var(--muted); font-size: 11px; margin: 4px 0 8px; overflow-wrap: anywhere; }
+#memory-form .saved-preset-actions { margin: 0; }
+#memory-list { margin: 5px 0 8px; padding-inline-start: 18px; overflow-wrap: anywhere; }
 .stem-section { margin-top: 14px; }
 #stems { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 #stems button { font-size: 12px; padding-inline: 9px; }
 #stems button[aria-pressed="true"] { color: var(--accent); border-color: #3e5853; }
 #stem-status:not(:empty) { color: var(--muted); font-size: 11px; margin-top: 5px; }
+#lyrics { margin-top: 15px; padding-top: 10px; border-top: 1px solid var(--line); }
+#lyrics-status, #lyrics-offset-help { color: var(--muted); font-size: 11px; margin-top: 4px; }
+#lyrics-viewport {
+  position: relative;
+  max-height: 11rem;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+#lyrics-viewport p { white-space: pre-wrap; overflow-wrap: anywhere; padding: 3px 5px; }
+#lyrics-viewport [aria-current="true"] { color: var(--accent); background: #283b3a; border-radius: 5px; }
+#lyrics-search { margin-top: 8px; }
+#lyrics-search label { font-size: 12px; }
+#lyrics-search input:not([type="checkbox"]) {
+  max-width: 100%;
+  padding: 4px 6px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+#lyrics-search input[type="text"] { display: block; width: 100%; margin: 2px 0 5px; }
+.lyrics-options { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 9px; }
+.lyrics-options input[type="number"] { width: 4.4em; }
+.lyrics-options input[type="checkbox"] { accent-color: var(--accent); }
+#lyrics-submit { margin-top: 6px; font-size: 12px; }
+#chords-status { color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+#chords-retry { margin-bottom: 8px; }
+#chords-content { margin-bottom: 8px; font-size: 12px; }
+#chord-progression { position: relative; display: flex; gap: 4px; overflow-x: auto; padding: 4px; margin-inline: -4px; }
+#chord-progression [aria-current="true"] { color: var(--accent); background: #283b3a; }
+#chord-progression [aria-pressed="true"] { border-color: var(--accent); }
+#chord-diagrams h3, #chord-diagrams h4 { font-size: 12px; margin: 5px 0; }
+#chord-diagrams p { color: var(--muted); }
+.chord-piano { width: 126px; height: 42px; display: flex; }
+.chord-piano span { width: 18px; background: var(--text); border: 1px solid var(--panel); }
+.chord-piano .black-key { width: 10px; height: 26px; margin: 0 -5px; z-index: 1; background: var(--line); }
+.chord-piano [data-played="true"] { background: var(--accent); }
+.chord-guitar { display: grid; width: 108px; grid-template-columns: repeat(6, 1fr); text-align: center; }
+.chord-guitar span:nth-child(n+7) { border: 1px solid var(--line); min-height: 16px; color: var(--accent); }
 #monitor {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -15,6 +15,7 @@
   "dependencies": {
     "dotenv": "^16.6.1",
     "express": "^5.1.0",
+    "supermemory": "^5.1.2",
     "zod": "^4.1.12"
   },
   "devDependencies": {

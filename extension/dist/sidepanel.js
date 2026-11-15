@@ -31,6 +31,14 @@
     }
     return patch;
   }
+  function applyPatch(current, patch) {
+    return { ...current, ...clampPatch(patch) };
+  }
+  function clampEffects(input) {
+    const patch = clampPatch(input);
+    if (Object.keys(patch).length !== effectKeys.length) throw new Error("Expected all effect parameters.");
+    return applyPatch(neutralEffects, patch);
+  }
   var presets = {
     Dreamy: Object.freeze({ ...neutralEffects, reverbMix: 0.33, trebleDb: -2 }),
     Warm: Object.freeze({ ...neutralEffects, bassDb: 2, trebleDb: -3 }),
@@ -39,10 +47,977 @@
     "Clear Voice": Object.freeze({ ...neutralEffects, highpassHz: 100, bassDb: -2, trebleDb: 2 })
   };
 
+  // extension/src/lyrics-session.ts
+  var LyricsSession = class {
+    constructor() {
+      this.revision = 0;
+      this.playback = null;
+    }
+    setSource(source) {
+      this.source = source;
+      this.playback = null;
+      this.revision++;
+    }
+    receive(source, snapshot2) {
+      if (source !== this.source) return "ignored";
+      const previous = this.playback;
+      const changed = previous?.videoId !== snapshot2?.videoId || previous?.song.title !== snapshot2?.song.title || previous?.song.artist !== snapshot2?.song.artist || previous?.ad !== snapshot2?.ad || Math.round((previous?.song.duration ?? 0) * 10) !== Math.round((snapshot2?.song.duration ?? 0) * 10);
+      this.playback = snapshot2;
+      if (changed) this.revision++;
+      return changed ? "changed" : "playback";
+    }
+    invalidateLookup() {
+      return ++this.revision;
+    }
+    acceptsLookup(revision) {
+      return this.playback !== null && this.revision === revision;
+    }
+  };
+
+  // extension/src/shared/lyrics.ts
+  var youtubePlaybackPort = "moodshift-youtube-playback";
+  function trackKey(value) {
+    return value.normalize("NFKD").toLowerCase().replace(new RegExp("\\p{M}", "gu"), "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  }
+  function synchronizedPosition(playback, offset) {
+    return playback.position - offset * playback.rate;
+  }
+  function activeLyric(lines, playback, offset) {
+    const position = synchronizedPosition(playback, offset);
+    let start = 0;
+    let end = lines.length;
+    while (start < end) {
+      const mid = start + end >>> 1;
+      if (lines[mid].time <= position) start = mid + 1;
+      else end = mid;
+    }
+    return start - 1;
+  }
+  function validSong(query) {
+    return !!trackKey(query.title) && !!trackKey(query.artist) && query.title.length <= 200 && query.artist.length <= 200 && Number.isFinite(query.duration) && query.duration >= 1 && query.duration <= 3600;
+  }
+
+  // extension/src/lyrics-panel.ts
+  var offsetKey = "lyricsOffset";
+  var correctionKey = "lyricsCorrections";
+  var formatOffset = (value) => Math.max(-10, Math.min(10, Number.isFinite(value) ? value : 0));
+  function mountLyrics(root, onPlayback) {
+    const form2 = root.querySelector("#lyrics-search");
+    const title = root.querySelector("#lyrics-title");
+    const artist = root.querySelector("#lyrics-artist");
+    const search = root.querySelector("#lyrics-submit");
+    const status2 = root.querySelector("#lyrics-status");
+    const viewport = root.querySelector("#lyrics-viewport");
+    const follow = root.querySelector("#lyrics-follow");
+    const offset = root.querySelector("#lyrics-offset");
+    const session = new LyricsSession();
+    let source;
+    let connection;
+    let searchTimer;
+    let cooldownTimer;
+    let edited = false;
+    let editing = false;
+    let allowSearchAt = 0;
+    let lines = [];
+    let lineElements = [];
+    let active = -1;
+    function refreshControls() {
+      form2.hidden = session.playback === null;
+      search.disabled = !session.playback?.song.duration || Date.now() < allowSearchAt;
+    }
+    function clearLyrics() {
+      active = -1;
+      lines = [];
+      lineElements = [];
+      viewport.replaceChildren();
+      viewport.hidden = true;
+      follow.disabled = true;
+    }
+    function centerActive() {
+      if (!follow.checked) return;
+      const line = lineElements[active];
+      if (line?.hidden) return;
+      viewport.scrollTop = line ? line.offsetTop - (viewport.clientHeight - line.clientHeight) / 2 : 0;
+    }
+    function highlight() {
+      const playback = session.playback;
+      onPlayback(playback, formatOffset(offset.valueAsNumber));
+      if (!playback || !lines.length) return;
+      const index = activeLyric(lines, playback, formatOffset(offset.valueAsNumber));
+      if (index === active) return;
+      lineElements[active]?.removeAttribute("aria-current");
+      active = index;
+      if (lines[index]?.text) lineElements[index].setAttribute("aria-current", "true");
+      centerActive();
+    }
+    function show(result) {
+      clearLyrics();
+      switch (result.kind) {
+        case "synced":
+          status2.textContent = "Synchronized lyrics";
+          lines = result.lines;
+          lineElements = lines.map(({ text }) => {
+            const line = document.createElement("p");
+            line.textContent = text;
+            line.hidden = !text;
+            return line;
+          });
+          viewport.replaceChildren(...lineElements);
+          viewport.hidden = false;
+          follow.disabled = false;
+          highlight();
+          break;
+        case "plain": {
+          status2.textContent = "Plain lyrics \xB7 Timing unavailable";
+          const plain = document.createElement("p");
+          plain.textContent = result.text;
+          viewport.replaceChildren(plain);
+          viewport.hidden = false;
+          break;
+        }
+        case "instrumental":
+          status2.textContent = "LRCLIB lists this recording as instrumental.";
+          break;
+        case "invalid":
+          status2.textContent = "Check the song title and artist. A finite video duration is needed.";
+          break;
+        case "missing":
+          status2.textContent = "No matching lyrics. Check the song title and artist and try again.";
+          break;
+        case "ambiguous":
+          status2.textContent = "Multiple recordings matched. Check the title and artist.";
+          break;
+        case "error":
+          status2.textContent = "Could not reach LRCLIB or read its reply. Try again shortly.";
+          break;
+        case "limited": {
+          allowSearchAt = result.retryAt;
+          const seconds = Math.max(1, Math.ceil((allowSearchAt - Date.now()) / 1e3));
+          const notice = "LRCLIB asks us to wait. Try again in " + seconds + " s.";
+          status2.textContent = notice;
+          clearTimeout(cooldownTimer);
+          cooldownTimer = setTimeout(() => {
+            if (status2.textContent === notice && Date.now() >= allowSearchAt) status2.textContent = "You can retry the lyric search.";
+            refreshControls();
+          }, Math.min(2147483647, seconds * 1e3));
+          break;
+        }
+      }
+      refreshControls();
+    }
+    async function find(revision, retry) {
+      if (!session.acceptsLookup(revision)) return;
+      const query = { title: title.value.trim(), artist: artist.value.trim(), duration: session.playback.song.duration };
+      if (!validSong(query)) {
+        show({ kind: "invalid" });
+        return;
+      }
+      clearLyrics();
+      status2.textContent = "Finding lyrics\u2026";
+      try {
+        const result = await chrome.runtime.sendMessage({
+          target: "lyrics",
+          query,
+          retry
+        });
+        if (session.acceptsLookup(revision)) show(result);
+      } catch {
+        if (session.acceptsLookup(revision)) show({ kind: "error" });
+      }
+    }
+    function receive(id, update) {
+      const previousVideo = session.playback?.videoId;
+      const outcome = session.receive(id, update);
+      if (outcome === "ignored") return;
+      if (outcome === "changed") onPlayback(update, formatOffset(offset.valueAsNumber));
+      if (outcome === "playback" && update) {
+        highlight();
+        return;
+      }
+      clearTimeout(searchTimer);
+      clearLyrics();
+      refreshControls();
+      if (!update) {
+        title.value = "";
+        artist.value = "";
+        status2.textContent = "Waiting for a YouTube video on the selected tab\u2026";
+        return;
+      }
+      if (previousVideo !== update.videoId) {
+        edited = false;
+        editing = false;
+      }
+      if (editing) return;
+      if (!edited) {
+        title.value = update.song.title.slice(0, 200);
+        artist.value = update.song.artist.slice(0, 200);
+      }
+      if (!update.song.duration) {
+        status2.textContent = update.ad ? "Lyrics will resume after the ad." : "Waiting for the video to start\u2026";
+        return;
+      }
+      status2.textContent = "Finding lyrics\u2026";
+      const revision = session.invalidateLookup();
+      searchTimer = setTimeout(async () => {
+        try {
+          const stored = await chrome.storage.session.get(correctionKey);
+          const corrections = stored[correctionKey];
+          const correction = corrections?.[update.videoId];
+          if (!session.acceptsLookup(revision)) return;
+          if (correction && !edited) {
+            title.value = correction.title;
+            artist.value = correction.artist;
+            edited = true;
+          }
+        } catch {
+        }
+        void find(revision, false);
+      }, 700);
+    }
+    function connect() {
+      if (!source || connection) return;
+      const { id, tabId } = source;
+      const port = chrome.tabs.connect(tabId, { name: youtubePlaybackPort, frameId: 0 });
+      connection = port;
+      port.onMessage.addListener((update) => {
+        if (connection === port) receive(id, update);
+      });
+      port.onDisconnect.addListener(() => {
+        const failed = chrome.runtime.lastError;
+        if (connection !== port) return;
+        connection = void 0;
+        receive(id, null);
+        if (failed) status2.textContent = "Select a YouTube watch tab. Reload the page if the extension was just installed.";
+      });
+    }
+    chrome.tabs.onUpdated.addListener((tabId, change) => {
+      if (tabId === source?.tabId && change.status === "complete") connect();
+    });
+    for (const input of [title, artist]) {
+      input.addEventListener("input", () => {
+        edited = true;
+        editing = true;
+        clearTimeout(searchTimer);
+        session.invalidateLookup();
+        clearLyrics();
+        status2.textContent = "Search to apply your song details.";
+      });
+    }
+    form2.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const playback = session.playback;
+      if (!playback || search.disabled) return;
+      clearTimeout(searchTimer);
+      const revision = session.invalidateLookup();
+      editing = false;
+      const correction = { title: title.value.trim(), artist: artist.value.trim() };
+      if (validSong({ ...correction, duration: playback.song.duration })) {
+        edited = true;
+        void chrome.storage.session.get(correctionKey).then((values) => {
+          const entries = Object.entries(values[correctionKey] ?? {}).filter(([id]) => id !== playback.videoId);
+          return chrome.storage.session.set({
+            [correctionKey]: Object.fromEntries([...entries.slice(-11), [playback.videoId, correction]])
+          });
+        }).catch(() => void 0);
+      }
+      void find(revision, true);
+    });
+    let offsetChanged = false;
+    void chrome.storage.local.get(offsetKey).then((values) => {
+      if (offsetChanged) return;
+      offset.value = String(formatOffset(Number(values[offsetKey] ?? 0)));
+      highlight();
+    }).catch(() => void 0);
+    offset.addEventListener("input", () => {
+      offsetChanged = true;
+      highlight();
+    });
+    offset.addEventListener("change", () => {
+      const value = formatOffset(offset.valueAsNumber);
+      offset.value = String(value);
+      void chrome.storage.local.set({ [offsetKey]: value }).catch(() => void 0);
+      highlight();
+    });
+    follow.addEventListener("change", centerActive);
+    for (const event of ["wheel", "touchstart"]) {
+      viewport.addEventListener(event, () => {
+        follow.checked = false;
+      }, { passive: true });
+    }
+    viewport.addEventListener("keydown", (event) => {
+      if (["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"].includes(event.key)) follow.checked = false;
+    });
+    return {
+      setSource(next) {
+        if (next?.id === source?.id) return;
+        const old = connection;
+        connection = void 0;
+        old?.disconnect();
+        source = next;
+        session.setSource(next?.id);
+        onPlayback(null, formatOffset(offset.valueAsNumber));
+        clearTimeout(searchTimer);
+        clearLyrics();
+        title.value = "";
+        artist.value = "";
+        refreshControls();
+        status2.textContent = next ? "Waiting for a YouTube video on the selected tab\u2026" : "Select a playing YouTube tab with the MoodShift icon.";
+        connect();
+      }
+    };
+  }
+
+  // extension/src/shared/chords.ts
+  var validChordVideo = (id) => typeof id === "string" && /^[\w-]{11}$/.test(id);
+  function chordPosition(events, playback, offset) {
+    if (playback.ad) return { current: -1, next: -1 };
+    const time = synchronizedPosition(playback, offset);
+    let start = 0;
+    let end = events.length;
+    while (start < end) {
+      const mid = start + end >>> 1;
+      if (events[mid].startTime <= time) start = mid + 1;
+      else end = mid;
+    }
+    return {
+      current: start > 0 && time < events[start - 1].endTime ? start - 1 : -1,
+      next: start < events.length ? start : -1
+    };
+  }
+  var notes = ["C", "C\u266F", "D", "D\u266F", "E", "F", "F\u266F", "G", "G\u266F", "A", "A\u266F", "B"];
+  var naturalNotes = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  var intervals = {
+    "": [0, 4, 7],
+    maj: [0, 4, 7],
+    m: [0, 3, 7],
+    "7": [0, 4, 7, 10],
+    maj7: [0, 4, 7, 11],
+    M7: [0, 4, 7, 11],
+    m7: [0, 3, 7, 10],
+    mM7: [0, 3, 7, 11],
+    sus2: [0, 2, 7],
+    sus4: [0, 5, 7]
+  };
+  function pitch(name) {
+    return (naturalNotes[name[0]] + (name[1] === "#" ? 1 : name[1] === "b" ? -1 : 0) + 12) % 12;
+  }
+  function pianoNotes(chord) {
+    const match = /^([A-G][#b]?)([\w]*)(?:\/([A-G][#b]?))?$/.exec(chord.replaceAll("\u266F", "#").replaceAll("\u266D", "b"));
+    if (!match || !Object.hasOwn(intervals, match[2])) return;
+    const root = pitch(match[1]);
+    const pitches = intervals[match[2]].map((interval) => (root + interval) % 12);
+    const bass = match[3] && pitch(match[3]);
+    if (typeof bass === "number") return [bass, ...pitches.filter((note) => note !== bass)].map((note) => notes[note]);
+    return pitches.map((note) => notes[note]);
+  }
+  var fingerings = {
+    C: [-1, 3, 2, 0, 1, 0],
+    D: [-1, -1, 0, 2, 3, 2],
+    E: [0, 2, 2, 1, 0, 0],
+    F: [1, 3, 3, 2, 1, 1],
+    G: [3, 2, 0, 0, 0, 3],
+    A: [-1, 0, 2, 2, 2, 0],
+    B: [-1, 2, 4, 4, 4, 2],
+    Am: [-1, 0, 2, 2, 1, 0],
+    Em: [0, 2, 2, 0, 0, 0],
+    Dm: [-1, -1, 0, 2, 3, 1],
+    Bm: [-1, 2, 4, 4, 3, 2],
+    "F#m": [2, 4, 4, 2, 2, 2],
+    Bb: [-1, 1, 3, 3, 3, 1],
+    Eb: [-1, -1, 1, 3, 4, 3],
+    Gm: [3, 5, 5, 3, 3, 3],
+    G7: [3, 2, 0, 0, 0, 1],
+    E7: [0, 2, 0, 1, 0, 0],
+    A7: [-1, 0, 2, 0, 2, 0],
+    Am7: [-1, 0, 2, 0, 1, 0],
+    Cmaj7: [-1, 3, 2, 0, 0, 0],
+    Dsus4: [-1, -1, 0, 2, 3, 3]
+  };
+  var guitarAliases = { "A#": "Bb", "D#": "Eb", Gbm: "F#m", CM7: "Cmaj7" };
+  function guitarFrets(chord) {
+    const name = chord.replaceAll("\u266F", "#").replaceAll("\u266D", "b");
+    const key = Object.hasOwn(guitarAliases, name) ? guitarAliases[name] : name;
+    return Object.hasOwn(fingerings, key) ? fingerings[key] : void 0;
+  }
+
+  // extension/src/chords-provider.ts
+  var cacheAge = 7 * 24 * 60 * 60 * 1e3;
+  var cacheWrite = Promise.resolve();
+  var ChordSession = class {
+    constructor(provider, render2) {
+      this.provider = provider;
+      this.render = render2;
+      this.revision = 0;
+      this.requested = -1;
+    }
+    setPlayback(playback) {
+      const valid = playback && validChordVideo(playback.videoId);
+      const id = valid ? playback.videoId : void 0;
+      if (id !== this.videoId) {
+        this.videoId = id;
+        this.revision++;
+        this.result = void 0;
+      }
+      if (id && playback && Number.isFinite(playback.song.duration) && playback.song.duration > 0 && !playback.ad && !this.result && this.requested !== this.revision) {
+        void this.lookup(id);
+      }
+    }
+    async lookup(id) {
+      const revision = this.revision;
+      this.requested = revision;
+      const result = await this.provider(id).catch(() => ({ kind: "unavailable" }));
+      if (revision === this.revision) {
+        this.result = result;
+        this.render();
+      }
+    }
+    retry() {
+      if (this.videoId && this.result?.kind !== "found" && this.result) {
+        this.result = void 0;
+        void this.lookup(this.videoId);
+        this.render();
+      }
+    }
+  };
+
+  // extension/src/chords-panel.ts
+  var pianoKeys = ["C", "C\u266F", "D", "D\u266F", "E", "F", "F\u266F", "G", "G\u266F", "A", "A\u266F", "B"];
+  var element = (tag, content) => {
+    const node = document.createElement(tag);
+    node.textContent = content;
+    return node;
+  };
+  function piano(chord) {
+    const notes2 = pianoNotes(chord);
+    if (!notes2) return element("p", "Diagram unavailable");
+    const keyboard = element("div", "");
+    keyboard.className = "chord-piano";
+    keyboard.setAttribute("aria-hidden", "true");
+    for (const note of pianoKeys) {
+      const key = element("span", "");
+      if (note.includes("\u266F")) key.className = "black-key";
+      if (notes2.includes(note)) key.dataset.played = "true";
+      keyboard.append(key);
+    }
+    const diagram = element("div", "");
+    diagram.append(keyboard, element("p", notes2.join(" \xB7 ")));
+    return diagram;
+  }
+  function guitar(chord) {
+    const frets = guitarFrets(chord);
+    if (!frets) return element("p", "Diagram unavailable");
+    const base = Math.max(1, Math.max(...frets) - 3);
+    const grid = element("div", "");
+    grid.className = "chord-guitar";
+    grid.setAttribute("role", "img");
+    grid.setAttribute("aria-label", `Low E to high E: ${frets.map((fret) => fret < 0 ? "muted" : fret || "open").join(", ")}`);
+    for (const fret of frets) grid.append(element("span", fret < 0 ? "\xD7" : fret === 0 ? "\u25CB" : "\u2009"));
+    for (let row = base; row < base + 4; row++) {
+      for (const fret of frets) {
+        grid.append(element("span", fret === row ? "\u25CF" : ""));
+      }
+    }
+    const diagram = element("div", "");
+    diagram.append(grid, element("p", `Fret ${base} \xB7 E A D G B E`));
+    return diagram;
+  }
+  function mountChords(root) {
+    const details2 = root;
+    const status2 = root.querySelector("#chords-status");
+    const content = root.querySelector("#chords-content");
+    const progression = root.querySelector("#chord-progression");
+    const current = root.querySelector("#chord-current");
+    const next = root.querySelector("#chord-next");
+    const diagrams = root.querySelector("#chord-diagrams");
+    const retry = root.querySelector("#chords-retry");
+    let playback = null;
+    let offset = 0;
+    let events;
+    let buttons = [];
+    let selected;
+    let highlighted = -1;
+    let drawn = "";
+    const session = new ChordSession((id) => chrome.runtime.sendMessage({ target: "chords", videoId: id }), render2);
+    function showDiagram(chord) {
+      if ((chord ?? "") === drawn) return;
+      drawn = chord ?? "";
+      diagrams.replaceChildren();
+      if (chord) diagrams.append(element("h3", chord), element("h4", "Guitar"), guitar(chord), element("h4", "Piano"), piano(chord));
+    }
+    function render2() {
+      const result = session.result;
+      const visible = playback && !playback.ad && Number.isFinite(playback.song.duration) && playback.song.duration > 0;
+      retry.hidden = !visible || result?.kind !== "unavailable" && result?.kind !== "invalid";
+      const message = !playback ? "Select a YouTube watch tab with the MoodShift icon." : playback.ad ? "Chords will resume after the ad." : !visible ? "A finite YouTube video is needed." : !result ? "Finding chords\u2026" : result.kind === "found" ? "Songle \xB7 Estimated chords" : result.kind === "missing" ? "Songle has no chord data for this video." : result.kind === "empty" ? "Songle returned an empty chord progression." : result.kind === "invalid" ? "Could not read the Songle response." : "Songle is unavailable.";
+      if (status2.textContent !== message) status2.textContent = message;
+      const found = result?.kind === "found" ? result.events : void 0;
+      content.hidden = !visible || !found;
+      if (found !== events) {
+        events = found;
+        selected = void 0;
+        highlighted = -1;
+        buttons = (events ?? []).map(({ chord, startTime }, index) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = chord;
+          button.setAttribute("aria-label", `${chord} at ${startTime.toFixed(2)} seconds`);
+          button.addEventListener("click", () => {
+            selected = selected === index ? void 0 : index;
+            render2();
+          });
+          return button;
+        });
+        progression.replaceChildren(...buttons);
+      }
+      if (!found || !visible || !playback) {
+        showDiagram();
+        return;
+      }
+      const position = chordPosition(found, playback, offset);
+      if (highlighted !== position.current) {
+        buttons[highlighted]?.removeAttribute("aria-current");
+        highlighted = position.current;
+        const active = buttons[highlighted];
+        if (active) {
+          active.setAttribute("aria-current", "true");
+          if (selected === void 0) progression.scrollLeft = active.offsetLeft - (progression.clientWidth - active.clientWidth) / 2;
+        }
+      }
+      current.textContent = found[position.current]?.chord ?? "\u2014";
+      next.textContent = found[position.next]?.chord ?? "\u2014";
+      const previous = progression.querySelector('[aria-pressed="true"]');
+      previous?.setAttribute("aria-pressed", "false");
+      if (selected !== void 0) buttons[selected].setAttribute("aria-pressed", "true");
+      showDiagram(found[selected ?? position.current]?.chord);
+    }
+    function sync() {
+      session.setPlayback(details2.open ? playback : null);
+      if (details2.open) render2();
+    }
+    details2.addEventListener("toggle", sync);
+    retry.addEventListener("click", () => session.retry());
+    return {
+      setPlayback(update, timingOffset) {
+        playback = update;
+        offset = timingOffset;
+        sync();
+      }
+    };
+  }
+
   // extension/src/shared/messages.ts
   var meterChannel = "moodshift-meter";
   function toWorker(command2) {
     return chrome.runtime.sendMessage({ ...command2, target: "worker" });
+  }
+
+  // extension/src/saved-presets.ts
+  var savedPresetsKey = "moodshiftSavedPresets";
+  function details(name, description) {
+    const trimmed = name.trim();
+    const note = description?.trim();
+    if (!trimmed || trimmed.length > 64 || (note?.length ?? 0) > 200) {
+      throw new Error("Enter a name up to 64 characters and an optional description up to 200.");
+    }
+    return { name: trimmed, description: note || void 0 };
+  }
+  function validDate(value) {
+    return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+  }
+  function validatePreset(value) {
+    const preset = value;
+    if (preset?.schemaVersion !== 1 || typeof preset.id !== "string" || !/^[0-9a-f-]{36}$/i.test(preset.id) || !validDate(preset.createdAt) || !validDate(preset.updatedAt) || preset.updatedAt < preset.createdAt || typeof preset.name !== "string" || preset.description !== void 0 && typeof preset.description !== "string" || preset.stemMode !== "full" && preset.stemMode !== "instrumental" && preset.stemMode !== "vocals" || preset.monitor !== "original" && preset.monitor !== "modified") {
+      throw new Error("This preset uses an invalid or unsupported format.");
+    }
+    return {
+      schemaVersion: 1,
+      id: preset.id,
+      createdAt: preset.createdAt,
+      updatedAt: preset.updatedAt,
+      ...details(preset.name, preset.description),
+      audioSettings: clampEffects(preset.audioSettings),
+      stemMode: preset.stemMode,
+      monitor: preset.monitor
+    };
+  }
+  function storedPreset(value) {
+    try {
+      return validatePreset(value);
+    } catch {
+      return void 0;
+    }
+  }
+  function snapshot(capture) {
+    if (capture.stem.phase === "loading" || capture.stem.phase === "buffering") {
+      throw new Error("Wait for stem selection to finish before saving.");
+    }
+    return { audioSettings: capture.effects, stemMode: capture.stem.mode, monitor: capture.monitor };
+  }
+  async function read() {
+    const data = (await chrome.storage.local.get(savedPresetsKey))[savedPresetsKey];
+    if (data === void 0) return [];
+    if (!Array.isArray(data)) throw new Error("Saved presets could not be read.");
+    return data;
+  }
+  async function listPresets() {
+    const rows = await read();
+    const presets2 = rows.map(storedPreset).filter((preset) => preset !== void 0);
+    return { presets: presets2, skipped: rows.length - presets2.length };
+  }
+  async function editPreset(edit) {
+    return navigator.locks.request(savedPresetsKey, async () => {
+      const rows = await read();
+      const existing = rows.map(storedPreset);
+      const index = edit.type === "save" ? rows.length : existing.findIndex((preset2) => preset2?.id === edit.id);
+      if (index < 0) throw new Error("This preset is no longer available.");
+      if (edit.type === "delete") {
+        rows.splice(index, 1);
+        await chrome.storage.local.set({ [savedPresetsKey]: rows });
+        return;
+      }
+      const updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      const saved = existing[index];
+      const preset = validatePreset(edit.type === "save" ? {
+        ...snapshot(edit.capture),
+        ...details(edit.name, edit.description),
+        id: crypto.randomUUID(),
+        createdAt: updatedAt,
+        updatedAt,
+        schemaVersion: 1
+      } : {
+        ...saved,
+        updatedAt: saved && saved.updatedAt > updatedAt ? saved.updatedAt : updatedAt,
+        ...edit.type === "rename" ? details(edit.name, edit.description) : snapshot(edit.capture)
+      });
+      if (existing.some((row) => row && row.id !== preset.id && row.name.toLowerCase() === preset.name.toLowerCase())) {
+        throw new Error("A preset already uses this name. Choose another name or update that preset.");
+      }
+      rows[index] = preset;
+      await chrome.storage.local.set({ [savedPresetsKey]: rows });
+      return preset.id;
+    });
+  }
+  async function applySavedPreset(input, capture, current, send = toWorker) {
+    const preset = validatePreset(input);
+    const sessionId = capture.session.id;
+    const assertCurrent = () => {
+      if (!current()) throw new Error("Preset application was superseded.");
+    };
+    const requireCapture = (reply) => {
+      assertCurrent();
+      if (!reply.ok) throw new Error(reply.message);
+      if (reply.status.phase !== "capturing" || reply.status.session.id !== sessionId) {
+        throw new Error("The selected tab changed during preset application.");
+      }
+      return reply.status;
+    };
+    let status2 = requireCapture(await send({
+      type: "APPLY_EFFECTS",
+      sessionId,
+      patch: preset.audioSettings,
+      baseRevision: capture.revision
+    }));
+    const matches = () => effectKeys.every((key) => status2.effects[key] === preset.audioSettings[key]);
+    if (!matches()) throw new Error("Audio settings changed during preset application.");
+    let limitation;
+    if (status2.stem.mode !== preset.stemMode || preset.stemMode !== "full" && status2.stem.phase !== "active") {
+      const reply = await send({ type: "SET_STEM", sessionId, mode: preset.stemMode, baseRevision: status2.revision });
+      assertCurrent();
+      if (reply.ok) status2 = requireCapture(reply);
+      else {
+        limitation = reply.message;
+        status2 = requireCapture(await send({ type: "GET_STATUS" }));
+        if (!matches()) throw new Error("Audio settings changed during preset application.");
+      }
+    }
+    if (status2.monitor !== preset.monitor) {
+      status2 = requireCapture(await send({ type: "SET_MONITOR", sessionId, monitor: preset.monitor, baseRevision: status2.revision }));
+    }
+    if (!matches() || status2.monitor !== preset.monitor) throw new Error("Audio settings changed during preset application.");
+    if (status2.stem.mode !== preset.stemMode || preset.stemMode !== "full" && status2.stem.phase !== "active") {
+      limitation ??= "The requested stem is unavailable.";
+    }
+    return { status: status2, limitation };
+  }
+
+  // extension/src/saved-presets-panel.ts
+  function mountSavedPresets(root, readCapture2, restore) {
+    const query = (selector) => root.querySelector(selector);
+    const select = query("#saved-preset-list");
+    const name = query("#saved-preset-name");
+    const description = query("#saved-preset-description");
+    const save = query("#saved-preset-save");
+    const apply = query("#saved-preset-apply");
+    const rename = query("#saved-preset-rename");
+    const update = query("#saved-preset-update");
+    const remove = query("#saved-preset-delete");
+    const status2 = query("#saved-preset-status");
+    const notice = query("#saved-preset-notice");
+    let presets2 = [];
+    let captureReady = false;
+    let busy = false;
+    let needsReload = false;
+    let reloadId = 0;
+    function controls2() {
+      const exists = presets2.some((preset) => preset.id === select.value);
+      select.disabled = busy;
+      name.disabled = busy;
+      description.disabled = busy;
+      save.disabled = busy || !captureReady || !name.value.trim();
+      apply.disabled = busy || !captureReady || !exists;
+      update.disabled = busy || !captureReady || !exists;
+      rename.disabled = busy || !exists || !name.value.trim();
+      remove.disabled = busy || !exists;
+    }
+    function fillName() {
+      const preset = presets2.find((item) => item.id === select.value);
+      name.value = preset?.name ?? "";
+      description.value = preset?.description ?? "";
+      controls2();
+    }
+    async function reload(preferred = select.value) {
+      const id = ++reloadId;
+      const result = await listPresets();
+      if (id !== reloadId) return;
+      presets2 = result.presets;
+      select.replaceChildren(
+        new Option(presets2.length ? "Select a saved preset" : "No saved presets", ""),
+        ...presets2.map((preset) => new Option(preset.name, preset.id))
+      );
+      select.value = presets2.some((preset) => preset.id === preferred) ? preferred : "";
+      notice.textContent = result.skipped ? "Some stored presets use an invalid or unsupported format." : "";
+      controls2();
+    }
+    async function run(work) {
+      if (busy) return;
+      busy = true;
+      status2.textContent = "";
+      controls2();
+      try {
+        status2.textContent = await work();
+      } catch (error) {
+        status2.textContent = error instanceof Error ? error.message : "Could not access saved presets.";
+      } finally {
+        busy = false;
+        controls2();
+        if (needsReload) {
+          needsReload = false;
+          refresh2();
+        }
+      }
+    }
+    select.addEventListener("change", () => {
+      fillName();
+      status2.textContent = "";
+    });
+    name.addEventListener("input", controls2);
+    save.addEventListener("click", () => void run(async () => {
+      const id = await editPreset({ type: "save", name: name.value, description: description.value, capture: await readCapture2() });
+      await reload(id);
+      fillName();
+      return "Preset saved.";
+    }));
+    rename.addEventListener("click", () => void run(async () => {
+      const id = await editPreset({ type: "rename", id: select.value, name: name.value, description: description.value });
+      await reload(id);
+      fillName();
+      return "Preset details saved.";
+    }));
+    update.addEventListener("click", () => void run(async () => {
+      await editPreset({ type: "update", id: select.value, capture: await readCapture2() });
+      await reload();
+      return "Preset audio settings updated.";
+    }));
+    remove.addEventListener("click", () => void run(async () => {
+      await editPreset({ type: "delete", id: select.value });
+      await reload("");
+      fillName();
+      return "Preset deleted.";
+    }));
+    apply.addEventListener("click", () => void run(async () => {
+      const { presets: current } = await listPresets();
+      const preset = current.find((item) => item.id === select.value);
+      if (!preset) throw new Error("This preset is no longer available.");
+      status2.textContent = "Applying preset\u2026";
+      return restore(preset);
+    }));
+    const refresh2 = () => void reload().catch(() => {
+      notice.textContent = "Could not read saved presets.";
+    });
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local" || !changes[savedPresetsKey]) return;
+      if (busy) needsReload = true;
+      else refresh2();
+    });
+    refresh2();
+    return {
+      setCaptureReady(ready) {
+        captureReady = ready;
+        controls2();
+      }
+    };
+  }
+
+  // extension/src/shared/preferences.ts
+  var preferenceLimit = 240;
+  var installationIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  function explicitPreference(prompt) {
+    const text = prompt.trim();
+    if (/^remember that\s+\S/i.test(text)) return text.replace(/^remember that\s+/i, "");
+    if (/^i usually prefer\s+\S/i.test(text)) return text;
+  }
+
+  // extension/src/personalization-panel.ts
+  var storageKey = "moodshiftPersonalization";
+  function parseSettings(value) {
+    const settings = value;
+    if (typeof settings?.installationId === "string" && installationIdPattern.test(settings.installationId)) {
+      return { installationId: settings.installationId, enabled: settings.enabled === true };
+    }
+  }
+  async function updateSettings(enabled) {
+    return navigator.locks.request(storageKey, async () => {
+      const stored = parseSettings((await chrome.storage.local.get(storageKey))[storageKey]);
+      if (stored && (enabled === void 0 || stored.enabled === enabled)) return stored;
+      const next = { installationId: stored?.installationId ?? crypto.randomUUID(), enabled: enabled ?? false };
+      await chrome.storage.local.set({ [storageKey]: next });
+      return next;
+    });
+  }
+  function mountPersonalization(root, onChange) {
+    const query = (selector) => root.querySelector(selector);
+    const enable = query("#memory-enabled");
+    const form2 = query("#memory-form");
+    const field = query("#memory-preference");
+    const save = query("#memory-save");
+    const view = query("#memory-view");
+    const clear = query("#memory-clear");
+    const list = query("#memory-list");
+    const state = query("#memory-status");
+    let settings;
+    let ready = false;
+    let busy = false;
+    let clearing = false;
+    function controls2() {
+      enable.disabled = !ready || busy;
+      field.disabled = !settings?.enabled || busy;
+      save.disabled = field.disabled || !field.value.trim();
+      view.disabled = !ready || busy;
+      clear.disabled = !ready || busy;
+    }
+    function setSettings(next) {
+      const changed = !!settings?.enabled !== !!next?.enabled || next?.enabled && settings?.installationId !== next?.installationId;
+      settings = next;
+      ready = true;
+      enable.checked = next?.enabled === true;
+      controls2();
+      if (changed) onChange();
+    }
+    function showPreferences(preferences) {
+      list.replaceChildren(...preferences.map((text) => {
+        const node = document.createElement("li");
+        node.textContent = text;
+        return node;
+      }));
+      list.hidden = !preferences.length;
+    }
+    async function run(work) {
+      if (busy) return "Wait for the current preference action to finish.";
+      busy = true;
+      controls2();
+      state.textContent = "Working\u2026";
+      try {
+        const message = await work();
+        state.textContent = message;
+        return message;
+      } catch (error) {
+        const message = error instanceof TypeError ? "Could not reach the local proxy." : error instanceof Error ? error.message : "Could not complete the preference action.";
+        state.textContent = message;
+        return message;
+      } finally {
+        busy = false;
+        controls2();
+      }
+    }
+    async function remote(action) {
+      const latest = await updateSettings();
+      if (action.action === "remember" && !latest.enabled) throw new Error("Enable personalization to remember a preference.");
+      const response = await fetch("http://127.0.0.1:8787/api/memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...action, installationId: latest.installationId }),
+        signal: AbortSignal.timeout(6500)
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof result?.error === "string" ? result.error.slice(0, 240) : "Supermemory could not complete the request.");
+      }
+      return result;
+    }
+    function remember(preference) {
+      return run(async () => {
+        if (!settings?.enabled) throw new Error("Enable personalization to remember a preference.");
+        const text = preference.trim();
+        if (!text || text.length > preferenceLimit || /[\u0000-\u001f\u007f]/.test(text)) {
+          throw new Error(`Enter a single sound preference up to ${preferenceLimit} characters.`);
+        }
+        const reply = await remote({ action: "remember", preference: text, enabled: true });
+        if (reply?.remembered !== true) throw new Error("Supermemory did not confirm the preference.");
+        if (field.value.trim() === text) field.value = "";
+        return reply.processing ? "Preference sent to Supermemory. Indexing may take a moment." : "Preference saved to Supermemory.";
+      });
+    }
+    enable.addEventListener("change", () => {
+      const enabled = enable.checked;
+      if (!enabled && settings) setSettings({ ...settings, enabled: false });
+      void run(async () => {
+        try {
+          setSettings(await updateSettings(enabled));
+        } catch {
+          setSettings(parseSettings((await chrome.storage.local.get(storageKey))[storageKey]));
+          throw new Error("Could not save the personalization setting.");
+        }
+        return enabled ? "Personalization enabled." : "Personalization disabled. Use Clear remote preferences to remove stored data.";
+      });
+    });
+    field.addEventListener("input", controls2);
+    form2.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!save.disabled) void remember(field.value);
+    });
+    view.addEventListener("click", () => void run(async () => {
+      showPreferences([]);
+      const reply = await remote({ action: "view" });
+      if (!Array.isArray(reply?.preferences) || !reply.preferences.every((text) => typeof text === "string")) {
+        throw new Error("Supermemory returned an unreadable preference list.");
+      }
+      showPreferences(reply.preferences.slice(0, 30));
+      return reply.hasMore ? "Showing up to 30 indexed preferences." : reply.preferences.length ? "Preferences from Supermemory." : "No indexed preferences found.";
+    }));
+    clear.addEventListener("click", () => void run(async () => {
+      clearing = true;
+      onChange();
+      try {
+        const reply = await remote({ action: "clear" });
+        if (reply?.cleared !== true) throw new Error("Supermemory did not confirm deletion.");
+        showPreferences([]);
+        return "Supermemory confirmed remote preferences were cleared.";
+      } finally {
+        clearing = false;
+      }
+    }));
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes[storageKey]) setSettings(parseSettings(changes[storageKey].newValue));
+    });
+    void chrome.storage.local.get(storageKey).then((values) => setSettings(parseSettings(values[storageKey]))).catch(() => {
+      state.textContent = "Could not read personalization settings.";
+    });
+    return {
+      remember,
+      context() {
+        return settings?.enabled && !clearing ? { enabled: true, installationId: settings.installationId } : void 0;
+      }
+    };
   }
 
   // extension/src/shared/types.ts
@@ -99,6 +1074,8 @@
 
   // extension/src/sidepanel.ts
   var statusLabel = document.querySelector("#status");
+  var chords = mountChords(document.querySelector("#chords"));
+  var lyrics = mountLyrics(document.querySelector("#lyrics"), chords.setPlayback);
   var stopButton = document.querySelector("#stop");
   var meter = document.querySelector("#meter");
   var inputStatus = document.querySelector("#input-status");
@@ -118,9 +1095,18 @@
   var queuedEdits = {};
   var editTimer;
   var commandPending = false;
+  var presetApplying = false;
   var interpretation;
+  var savedPresets = mountSavedPresets(document.querySelector("#saved-presets"), readCapture, restorePreset);
+  var personalization = mountPersonalization(document.querySelector("#personalization"), () => {
+    if (interpretation) {
+      cancelInterpretation();
+      feedback.textContent = "Personalization changed. Submit the prompt again.";
+    }
+  });
   function updateApply() {
     applyButton.disabled = status.phase !== "capturing" || stopping || commandPending || interpretation !== void 0 || Object.keys(queuedEdits).length > 0 || !promptInput.value.trim();
+    savedPresets.setCaptureReady(status.phase === "capturing" && !stopping && !commandPending && !interpretation && !Object.keys(queuedEdits).length && status.stem.phase !== "loading" && status.stem.phase !== "buffering");
   }
   function cancelInterpretation() {
     interpretation?.controller.abort();
@@ -206,14 +1192,16 @@
       clearEdits();
       commandId++;
       commandPending = false;
+      presetApplying = false;
       cancelInterpretation();
       stopping = false;
       feedback.textContent = "";
     }
     status = next;
+    lyrics.setSource(next.phase === "capturing" ? next.session : void 0);
     updateApply();
-    const enabled = next.phase === "capturing" && !stopping;
-    stopButton.disabled = !enabled;
+    stopButton.disabled = next.phase !== "capturing" || stopping;
+    const enabled = !stopButton.disabled && !presetApplying;
     controls.disabled = !enabled;
     for (const button of presetGroup.querySelectorAll("button")) button.disabled = !enabled;
     for (const button of monitorButtons) {
@@ -261,6 +1249,40 @@
       case "error":
         statusLabel.textContent = `Error \xB7 ${next.message}`;
         break;
+    }
+  }
+  async function readCapture() {
+    if (status.phase !== "capturing" || commandPending || stopping || interpretation || Object.keys(queuedEdits).length) {
+      throw new Error("Wait for the current audio change to finish.");
+    }
+    const sessionId = status.session.id;
+    const reply = await toWorker({ type: "GET_STATUS" });
+    if (!reply.ok || reply.status.phase !== "capturing" || reply.status.session.id !== sessionId || status.phase !== "capturing" || status.session.id !== sessionId || commandPending || stopping || interpretation || Object.keys(queuedEdits).length) {
+      throw new Error("Select a tab and wait for the current audio change to finish.");
+    }
+    return reply.status;
+  }
+  async function restorePreset(preset) {
+    const capture = await readCapture();
+    const id = ++commandId;
+    commandPending = true;
+    presetApplying = true;
+    refreshId++;
+    render(status);
+    const current = () => id === commandId;
+    try {
+      const result = await applySavedPreset(preset, capture, current);
+      if (!current()) throw new Error("Preset application was superseded.");
+      refreshId++;
+      render(result.status);
+      return result.limitation ? `Effects and monitor applied. Stem unavailable \xB7 ${result.limitation}` : `Applied \u2713 \xB7 ${preset.name}`;
+    } finally {
+      if (current()) {
+        presetApplying = false;
+        commandPending = false;
+        render(status);
+        void refresh();
+      }
     }
   }
   async function command(message, detail = "", stemMode) {
@@ -318,6 +1340,7 @@
     clearEdits();
     cancelInterpretation();
     stopping = true;
+    presetApplying = false;
     render(status);
     void command({ type: "STOP", sessionId: status.session.id });
   });
@@ -334,6 +1357,12 @@
     event.preventDefault();
     const prompt = promptInput.value.trim();
     if (applyButton.disabled || !prompt || prompt.length > 500 || status.phase !== "capturing") return;
+    const preference = explicitPreference(prompt);
+    if (preference) {
+      const message = await personalization.remember(preference);
+      if (promptInput.value.trim() === prompt && !interpretation) feedback.textContent = message;
+      return;
+    }
     const { session, effects, revision, features, outputPaused } = status;
     const direct = directStemIntent(prompt);
     if (direct === "unsupported") {
@@ -356,7 +1385,8 @@
         body: JSON.stringify({
           prompt,
           currentEffects: effects,
-          audioFeatures: session.muted || outputPaused ? silentFeatures : features
+          audioFeatures: session.muted || outputPaused ? silentFeatures : features,
+          personalization: personalization.context()
         }),
         signal: request.controller.signal
       });
