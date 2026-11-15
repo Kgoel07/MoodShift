@@ -3,6 +3,8 @@ import { mountLyrics } from './lyrics-panel';
 import { mountChords } from './chords-panel';
 import { mountSavedPresets } from './saved-presets-panel';
 import { applySavedPreset, type SavedPreset } from './saved-presets';
+import { mountPersonalization } from './personalization-panel';
+import { explicitPreference } from './shared/preferences';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
 import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
 import { stemDelaySeconds } from './shared/stem-pcm';
@@ -32,6 +34,12 @@ let commandPending = false;
 let presetApplying = false;
 let interpretation: { id: string; controller: AbortController } | undefined;
 const savedPresets = mountSavedPresets(document.querySelector<HTMLElement>('#saved-presets')!, readCapture, restorePreset);
+const personalization = mountPersonalization(document.querySelector<HTMLElement>('#personalization')!, () => {
+  if (interpretation) {
+    cancelInterpretation();
+    feedback.textContent = 'Personalization changed. Submit the prompt again.';
+  }
+});
 
 function updateApply(): void {
   applyButton.disabled = status.phase !== 'capturing' || stopping || commandPending
@@ -296,6 +304,12 @@ form.addEventListener('submit', async event => {
   event.preventDefault();
   const prompt = promptInput.value.trim();
   if (applyButton.disabled || !prompt || prompt.length > 500 || status.phase !== 'capturing') return;
+  const preference = explicitPreference(prompt);
+  if (preference) {
+    const message = await personalization.remember(preference);
+    if (promptInput.value.trim() === prompt && !interpretation) feedback.textContent = message;
+    return;
+  }
   const { session, effects, revision, features, outputPaused } = status;
   const direct = directStemIntent(prompt);
   if (direct === 'unsupported') {
@@ -318,6 +332,7 @@ form.addEventListener('submit', async event => {
       body: JSON.stringify({
         prompt, currentEffects: effects,
         audioFeatures: session.muted || outputPaused ? silentFeatures : features,
+        personalization: personalization.context(),
       }),
       signal: request.controller.signal,
     });

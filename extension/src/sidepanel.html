@@ -99,6 +99,24 @@
       <summary>Effect controls</summary>
       <fieldset id="controls" aria-label="Effect settings" disabled></fieldset>
     </details>
+    <details id="personalization">
+      <summary>Personalization</summary>
+      <label><input id="memory-enabled" type="checkbox" disabled> Use remembered sound preferences</label>
+      <p id="memory-help">Supermemory stores preferences you explicitly ask to remember. Gemini can use them for future requests.</p>
+      <form id="memory-form" class="saved-preset-fields">
+        <label for="memory-preference">Sound preference</label>
+        <input id="memory-preference" type="text" maxlength="240" placeholder="I prefer warmer bass" disabled>
+        <div class="saved-preset-actions">
+          <button id="memory-save" type="submit" disabled>Remember preference</button>
+        </div>
+      </form>
+      <div class="saved-preset-actions">
+        <button id="memory-view" type="button" disabled>View preferences</button>
+        <button id="memory-clear" type="button" disabled>Clear remote preferences</button>
+      </div>
+      <p id="memory-status" role="status"></p>
+      <ul id="memory-list" hidden></ul>
+    </details>
     <footer><button id="stop" type="button" disabled>Stop processing</button></footer>
   </main>
   <script src="sidepanel.js"></script>

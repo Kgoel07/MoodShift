@@ -4,5 +4,4 @@ node_modules/
 .stem-gate/
 __pycache__/
 server/.env
-server/.env.example
 .env
