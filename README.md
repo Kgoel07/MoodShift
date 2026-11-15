@@ -13,6 +13,20 @@ MoodShift applies live EQ, filters, reverb, echo, and distortion to one selected
 
 Open the panel from Chrome’s side panel menu to inspect the existing session. Use the toolbar icon on a different source tab to switch capture. **Reset** restores neutral values for the current session. Select **Modified** to hear the effects after comparing with Original.
 
+## Synchronized YouTube lyrics
+
+Build or reload MoodShift, then reload the YouTube watch page so Chrome injects the new content script. Start a song and click the MoodShift icon on that tab. The **Lyrics** section uses the selected player’s position, pause state and playback rate. It follows the active line through seeks and YouTube’s in-tab video changes. Scroll the lyrics at any time and re-enable **Follow playback** to return to the active line.
+
+Edit **Song Title** and **Artist** and click **Search lyrics** if YouTube identifies the song incorrectly. MoodShift looks for matching title and artist and checks that the recording’s duration is within two seconds. It shows plain lyrics when an otherwise matching record has no timing. Different edits, live performances, and ambiguous results may have no verified match. [LRCLIB API](https://lrclib.net/docs)
+
+**Lyric offset** starts at `0`. Use a positive value to delay the highlighting and a negative value to advance it. With delayed stem playback, try `+2.8` seconds and adjust by ear. Original and Full Mix usually need less offset. This setting only changes the lyric display and persists locally.
+
+Lyrics work without Gemini or the stem helper. MoodShift sends only the song title and artist to LRCLIB. The extension caches recent lookup results and song corrections for the current Chrome session.
+
+To smoke-test in Chrome, open Jonathan Coulton’s “Code Monkey,” click MoodShift, and wait for **Synchronized lyrics**. Pause and seek, change the playback speed, then open another recommendation in the same tab. If an ad plays, the panel can identify the new song while waiting for the song’s clock. [Official YouTube track](https://www.youtube.com/watch?v=AEBld6I_AKs)
+
+To repeat the automated Chrome check after building, run `$env:MOODSHIFT_LYRICS_TEST='1'; node tests/chrome-smoke.mjs` in PowerShell. Add `$env:MOODSHIFT_LYRICS_STEMS='1'` to test an active stem alongside lyrics with the optional Windows helper.
+
 ## Optional live stems on Windows
 
 **Instrumental** and **Vocals** use the local MDX-Net helper. It was benchmarked on an RTX 3070 Laptop GPU with DirectML. The helper checks startup throughput for both 44.1 and 48 kHz before accepting audio. CPU-only playback missed the deadline in testing. The stem helper and Gemini proxy run independently.

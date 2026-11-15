@@ -46,6 +46,25 @@
       </div>
       <p id="stem-status" role="status"></p>
     </section>
+    <section id="lyrics" aria-labelledby="lyrics-label">
+      <h2 id="lyrics-label">Lyrics</h2>
+      <p id="lyrics-status" role="status">Select a playing YouTube tab with the MoodShift icon.</p>
+      <div id="lyrics-viewport" role="region" aria-label="Song lyrics" tabindex="0" hidden></div>
+      <form id="lyrics-search" hidden>
+        <label for="lyrics-title">Song Title</label>
+        <input id="lyrics-title" type="text" maxlength="200" required>
+        <label for="lyrics-artist">Artist</label>
+        <input id="lyrics-artist" type="text" maxlength="200" required>
+        <div class="lyrics-options">
+          <label for="lyrics-offset">Lyric offset (s)
+            <input id="lyrics-offset" type="number" min="-10" max="10" step="0.1" value="0" aria-describedby="lyrics-offset-help">
+          </label>
+          <label><input id="lyrics-follow" type="checkbox" checked disabled> Follow playback</label>
+        </div>
+        <p id="lyrics-offset-help">Positive values delay the lyrics.</p>
+        <button id="lyrics-submit" type="submit" disabled>Search lyrics</button>
+      </form>
+    </section>
     <details>
       <summary>Effect controls</summary>
       <fieldset id="controls" aria-label="Effect settings" disabled></fieldset>

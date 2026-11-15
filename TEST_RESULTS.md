@@ -55,3 +55,15 @@ All 45 baseline tests remain in the suite. Phase 2 adds nine TypeScript tests an
 | macOS stems and unsupported or slow Windows adapters | BLOCKED | This helper uses Windows DirectML. A host must pass its runtime checks before Chrome can activate a stem. |
 
 The longer YouTube attempt kept the stem session active for two minutes but failed the minimum playhead advancement check. The sustained playback result above uses the local fixture. Human listening on YouTube remains part of acceptance.
+
+## Synchronized lyrics
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| `npm run typecheck` and `npm run build:extension` | PASS (automated) | The unpacked build includes the YouTube content script and lyrics panel. |
+| `npm test` | PASS (automated) | 74 tests, including 20 lyrics tests for title normalization, song and capture changes, stale requests, LRCLIB recording selection and errors, timed parsing, seek, pause, rate and offset. The 54 existing tests also passed. |
+| Python stem transport | PASS (automated) | All four existing tests passed. |
+| YouTube and LRCLIB | PASS (automated) | Chrome 157 loaded live synchronized lyrics for Jonathan Coulton’s “Code Monkey” and verified the title, artist, active line, pause, seek, playback rate, manual offset, and panel reopen. [Official track](https://www.youtube.com/watch?v=AEBld6I_AKs) |
+| In-tab YouTube navigation | PASS (automated) | A related video replaced the lyrics metadata in the same document and capture session. A pre-roll exposed a timing edge case during development. MoodShift now displays the incoming song’s identity and waits for its playback clock before looking up lyrics. |
+| Audio coexistence | PASS (automated) | The local tone regression passed. Dreamy and the real DirectML Instrumental stem both worked on the YouTube capture with lyrics visible. |
+| Human listening and manual offset calibration | NOT RUN | The Chrome smoke test checked displayed state and active audio routing programmatically. |

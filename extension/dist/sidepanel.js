@@ -39,6 +39,320 @@
     "Clear Voice": Object.freeze({ ...neutralEffects, highpassHz: 100, bassDb: -2, trebleDb: 2 })
   };
 
+  // extension/src/lyrics-session.ts
+  var LyricsSession = class {
+    constructor() {
+      this.revision = 0;
+      this.playback = null;
+    }
+    setSource(source) {
+      this.source = source;
+      this.playback = null;
+      this.revision++;
+    }
+    receive(source, snapshot) {
+      if (source !== this.source) return "ignored";
+      const previous = this.playback;
+      const changed = previous?.videoId !== snapshot?.videoId || previous?.song.title !== snapshot?.song.title || previous?.song.artist !== snapshot?.song.artist || previous?.ad !== snapshot?.ad || Math.round((previous?.song.duration ?? 0) * 10) !== Math.round((snapshot?.song.duration ?? 0) * 10);
+      this.playback = snapshot;
+      if (changed) this.revision++;
+      return changed ? "changed" : "playback";
+    }
+    invalidateLookup() {
+      return ++this.revision;
+    }
+    acceptsLookup(revision) {
+      return this.playback !== null && this.revision === revision;
+    }
+  };
+
+  // extension/src/shared/lyrics.ts
+  var youtubePlaybackPort = "moodshift-youtube-playback";
+  function trackKey(value) {
+    return value.normalize("NFKD").toLowerCase().replace(new RegExp("\\p{M}", "gu"), "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  }
+  function activeLyric(lines, playback, offset) {
+    const position = playback.position - offset * playback.rate;
+    let start = 0;
+    let end = lines.length;
+    while (start < end) {
+      const mid = start + end >>> 1;
+      if (lines[mid].time <= position) start = mid + 1;
+      else end = mid;
+    }
+    return start - 1;
+  }
+  function validSong(query) {
+    return !!trackKey(query.title) && !!trackKey(query.artist) && query.title.length <= 200 && query.artist.length <= 200 && Number.isFinite(query.duration) && query.duration >= 1 && query.duration <= 3600;
+  }
+
+  // extension/src/lyrics-panel.ts
+  var offsetKey = "lyricsOffset";
+  var correctionKey = "lyricsCorrections";
+  var formatOffset = (value) => Math.max(-10, Math.min(10, Number.isFinite(value) ? value : 0));
+  function mountLyrics(root) {
+    const form2 = root.querySelector("#lyrics-search");
+    const title = root.querySelector("#lyrics-title");
+    const artist = root.querySelector("#lyrics-artist");
+    const search = root.querySelector("#lyrics-submit");
+    const status2 = root.querySelector("#lyrics-status");
+    const viewport = root.querySelector("#lyrics-viewport");
+    const follow = root.querySelector("#lyrics-follow");
+    const offset = root.querySelector("#lyrics-offset");
+    const session = new LyricsSession();
+    let source;
+    let connection;
+    let searchTimer;
+    let cooldownTimer;
+    let edited = false;
+    let editing = false;
+    let allowSearchAt = 0;
+    let lines = [];
+    let lineElements = [];
+    let active = -1;
+    function refreshControls() {
+      form2.hidden = session.playback === null;
+      search.disabled = !session.playback?.song.duration || Date.now() < allowSearchAt;
+    }
+    function clearLyrics() {
+      active = -1;
+      lines = [];
+      lineElements = [];
+      viewport.replaceChildren();
+      viewport.hidden = true;
+      follow.disabled = true;
+    }
+    function centerActive() {
+      if (!follow.checked) return;
+      const line = lineElements[active];
+      if (line?.hidden) return;
+      viewport.scrollTop = line ? line.offsetTop - (viewport.clientHeight - line.clientHeight) / 2 : 0;
+    }
+    function highlight() {
+      const playback = session.playback;
+      if (!playback || !lines.length) return;
+      const index = activeLyric(lines, playback, formatOffset(offset.valueAsNumber));
+      if (index === active) return;
+      lineElements[active]?.removeAttribute("aria-current");
+      active = index;
+      if (lines[index]?.text) lineElements[index].setAttribute("aria-current", "true");
+      centerActive();
+    }
+    function show(result) {
+      clearLyrics();
+      switch (result.kind) {
+        case "synced":
+          status2.textContent = "Synchronized lyrics";
+          lines = result.lines;
+          lineElements = lines.map(({ text }) => {
+            const line = document.createElement("p");
+            line.textContent = text;
+            line.hidden = !text;
+            return line;
+          });
+          viewport.replaceChildren(...lineElements);
+          viewport.hidden = false;
+          follow.disabled = false;
+          highlight();
+          break;
+        case "plain": {
+          status2.textContent = "Plain lyrics \xB7 Timing unavailable";
+          const plain = document.createElement("p");
+          plain.textContent = result.text;
+          viewport.replaceChildren(plain);
+          viewport.hidden = false;
+          break;
+        }
+        case "instrumental":
+          status2.textContent = "LRCLIB lists this recording as instrumental.";
+          break;
+        case "invalid":
+          status2.textContent = "Check the song title and artist. A finite video duration is needed.";
+          break;
+        case "missing":
+          status2.textContent = "No matching lyrics. Check the song title and artist and try again.";
+          break;
+        case "ambiguous":
+          status2.textContent = "Multiple recordings matched. Check the title and artist.";
+          break;
+        case "error":
+          status2.textContent = "Could not reach LRCLIB or read its reply. Try again shortly.";
+          break;
+        case "limited": {
+          allowSearchAt = result.retryAt;
+          const seconds = Math.max(1, Math.ceil((allowSearchAt - Date.now()) / 1e3));
+          const notice = "LRCLIB asks us to wait. Try again in " + seconds + " s.";
+          status2.textContent = notice;
+          clearTimeout(cooldownTimer);
+          cooldownTimer = setTimeout(() => {
+            if (status2.textContent === notice && Date.now() >= allowSearchAt) status2.textContent = "You can retry the lyric search.";
+            refreshControls();
+          }, Math.min(2147483647, seconds * 1e3));
+          break;
+        }
+      }
+      refreshControls();
+    }
+    async function find(revision, retry) {
+      if (!session.acceptsLookup(revision)) return;
+      const query = { title: title.value.trim(), artist: artist.value.trim(), duration: session.playback.song.duration };
+      if (!validSong(query)) {
+        show({ kind: "invalid" });
+        return;
+      }
+      clearLyrics();
+      status2.textContent = "Finding lyrics\u2026";
+      try {
+        const result = await chrome.runtime.sendMessage({
+          target: "lyrics",
+          query,
+          retry
+        });
+        if (session.acceptsLookup(revision)) show(result);
+      } catch {
+        if (session.acceptsLookup(revision)) show({ kind: "error" });
+      }
+    }
+    function receive(id, update) {
+      const previousVideo = session.playback?.videoId;
+      const outcome = session.receive(id, update);
+      if (outcome === "ignored") return;
+      if (outcome === "playback" && update) {
+        highlight();
+        return;
+      }
+      clearTimeout(searchTimer);
+      clearLyrics();
+      refreshControls();
+      if (!update) {
+        title.value = "";
+        artist.value = "";
+        status2.textContent = "Waiting for a YouTube video on the selected tab\u2026";
+        return;
+      }
+      if (previousVideo !== update.videoId) {
+        edited = false;
+        editing = false;
+      }
+      if (editing) return;
+      if (!edited) {
+        title.value = update.song.title.slice(0, 200);
+        artist.value = update.song.artist.slice(0, 200);
+      }
+      if (!update.song.duration) {
+        status2.textContent = update.ad ? "Lyrics will resume after the ad." : "Waiting for the video to start\u2026";
+        return;
+      }
+      status2.textContent = "Finding lyrics\u2026";
+      const revision = session.invalidateLookup();
+      searchTimer = setTimeout(async () => {
+        try {
+          const stored = await chrome.storage.session.get(correctionKey);
+          const corrections = stored[correctionKey];
+          const correction = corrections?.[update.videoId];
+          if (!session.acceptsLookup(revision)) return;
+          if (correction && !edited) {
+            title.value = correction.title;
+            artist.value = correction.artist;
+            edited = true;
+          }
+        } catch {
+        }
+        void find(revision, false);
+      }, 700);
+    }
+    function connect() {
+      if (!source || connection) return;
+      const { id, tabId } = source;
+      const port = chrome.tabs.connect(tabId, { name: youtubePlaybackPort, frameId: 0 });
+      connection = port;
+      port.onMessage.addListener((update) => {
+        if (connection === port) receive(id, update);
+      });
+      port.onDisconnect.addListener(() => {
+        const failed = chrome.runtime.lastError;
+        if (connection !== port) return;
+        connection = void 0;
+        receive(id, null);
+        if (failed) status2.textContent = "Select a YouTube watch tab. Reload the page if the extension was just installed.";
+      });
+    }
+    chrome.tabs.onUpdated.addListener((tabId, change) => {
+      if (tabId === source?.tabId && change.status === "complete") connect();
+    });
+    for (const input of [title, artist]) {
+      input.addEventListener("input", () => {
+        edited = true;
+        editing = true;
+        clearTimeout(searchTimer);
+        session.invalidateLookup();
+        clearLyrics();
+        status2.textContent = "Search to apply your song details.";
+      });
+    }
+    form2.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const playback = session.playback;
+      if (!playback || search.disabled) return;
+      clearTimeout(searchTimer);
+      const revision = session.invalidateLookup();
+      editing = false;
+      const correction = { title: title.value.trim(), artist: artist.value.trim() };
+      if (validSong({ ...correction, duration: playback.song.duration })) {
+        edited = true;
+        void chrome.storage.session.get(correctionKey).then((values) => {
+          const entries = Object.entries(values[correctionKey] ?? {}).filter(([id]) => id !== playback.videoId);
+          return chrome.storage.session.set({
+            [correctionKey]: Object.fromEntries([...entries.slice(-11), [playback.videoId, correction]])
+          });
+        }).catch(() => void 0);
+      }
+      void find(revision, true);
+    });
+    let offsetChanged = false;
+    void chrome.storage.local.get(offsetKey).then((values) => {
+      if (offsetChanged) return;
+      offset.value = String(formatOffset(Number(values[offsetKey] ?? 0)));
+      highlight();
+    }).catch(() => void 0);
+    offset.addEventListener("input", () => {
+      offsetChanged = true;
+      highlight();
+    });
+    offset.addEventListener("change", () => {
+      const value = formatOffset(offset.valueAsNumber);
+      offset.value = String(value);
+      void chrome.storage.local.set({ [offsetKey]: value }).catch(() => void 0);
+      highlight();
+    });
+    follow.addEventListener("change", centerActive);
+    for (const event of ["wheel", "touchstart"]) {
+      viewport.addEventListener(event, () => {
+        follow.checked = false;
+      }, { passive: true });
+    }
+    viewport.addEventListener("keydown", (event) => {
+      if (["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"].includes(event.key)) follow.checked = false;
+    });
+    return {
+      setSource(next) {
+        if (next?.id === source?.id) return;
+        const old = connection;
+        connection = void 0;
+        old?.disconnect();
+        source = next;
+        session.setSource(next?.id);
+        clearTimeout(searchTimer);
+        clearLyrics();
+        title.value = "";
+        artist.value = "";
+        refreshControls();
+        status2.textContent = next ? "Waiting for a YouTube video on the selected tab\u2026" : "Select a playing YouTube tab with the MoodShift icon.";
+        connect();
+      }
+    };
+  }
+
   // extension/src/shared/messages.ts
   var meterChannel = "moodshift-meter";
   function toWorker(command2) {
@@ -99,6 +413,7 @@
 
   // extension/src/sidepanel.ts
   var statusLabel = document.querySelector("#status");
+  var lyrics = mountLyrics(document.querySelector("#lyrics"));
   var stopButton = document.querySelector("#stop");
   var meter = document.querySelector("#meter");
   var inputStatus = document.querySelector("#input-status");
@@ -211,6 +526,7 @@
       feedback.textContent = "";
     }
     status = next;
+    lyrics.setSource(next.phase === "capturing" ? next.session : void 0);
     updateApply();
     const enabled = next.phase === "capturing" && !stopping;
     stopButton.disabled = !enabled;

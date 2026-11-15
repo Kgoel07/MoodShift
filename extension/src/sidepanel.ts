@@ -1,9 +1,11 @@
 import { effectKeys, effectSpecs, neutralEffects, presets, type EffectPatch } from './shared/effects';
+import { mountLyrics } from './lyrics-panel';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
 import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
 import { stemDelaySeconds } from './shared/stem-pcm';
 
 const statusLabel = document.querySelector<HTMLParagraphElement>('#status')!;
+const lyrics = mountLyrics(document.querySelector<HTMLElement>('#lyrics')!);
 const stopButton = document.querySelector<HTMLButtonElement>('#stop')!;
 const meter = document.querySelector<HTMLMeterElement>('#meter')!;
 const inputStatus = document.querySelector<HTMLParagraphElement>('#input-status')!;
@@ -131,6 +133,7 @@ function render(next: CaptureStatus): void {
     feedback.textContent = '';
   }
   status = next;
+  lyrics.setSource(next.phase === 'capturing' ? next.session : undefined);
   updateApply();
   const enabled = next.phase === 'capturing' && !stopping;
   stopButton.disabled = !enabled;

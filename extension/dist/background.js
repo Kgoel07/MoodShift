@@ -8,7 +8,168 @@
     void chrome.runtime.sendMessage({ target: "panel", type: "STATUS_CHANGED" }).catch(() => void 0);
   }
 
+  // extension/src/shared/lyrics.ts
+  function trackKey(value) {
+    return value.normalize("NFKD").toLowerCase().replace(new RegExp("\\p{M}", "gu"), "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  }
+  function parseLrc(text) {
+    const offset = Number(text.match(/^\s*\[offset:([+-]?\d+)\]\s*$/im)?.[1] ?? 0) / 1e3;
+    const lines = [];
+    for (const raw of text.split(/\r?\n/)) {
+      const entry = raw.trimStart();
+      const tags = entry.match(/^(?:\[\d{1,3}:[0-5]\d(?:[.:]\d{1,3})?\])+/)?.[0];
+      if (!tags) continue;
+      const lyric = entry.slice(tags.length).replace(/<\d{1,3}:[0-5]\d(?:\.\d{1,3})?>/g, "").trim();
+      for (const match of tags.matchAll(/\[(\d+):(\d+)(?:[.:](\d+))?\]/g)) {
+        const seconds = Number(match[1]) * 60 + Number(match[2]) + Number("0." + (match[3] ?? "0"));
+        lines.push({ time: Math.max(0, seconds - offset), text: lyric });
+      }
+    }
+    if (!lines.some((line) => line.text)) return [];
+    const merged = [];
+    for (const line of lines.sort((a, b) => a.time - b.time)) {
+      const last = merged.at(-1);
+      if (last?.time !== line.time) merged.push(line);
+      else if (line.text && line.text !== last.text) last.text = [last.text, line.text].filter(Boolean).join("\n");
+    }
+    return merged;
+  }
+  function validSong(query) {
+    return !!trackKey(query.title) && !!trackKey(query.artist) && query.title.length <= 200 && query.artist.length <= 200 && Number.isFinite(query.duration) && query.duration >= 1 && query.duration <= 3600;
+  }
+
+  // extension/src/lyrics-provider.ts
+  function matchLyrics(payload, song) {
+    if (!Array.isArray(payload)) return { kind: "error" };
+    const candidates = [];
+    const title = trackKey(song.title);
+    const artist = trackKey(song.artist);
+    for (const row of payload.slice(0, 20)) {
+      if (!row || typeof row !== "object" || typeof row.trackName !== "string" || typeof row.artistName !== "string" || typeof row.duration !== "number" || !Number.isFinite(row.duration)) continue;
+      const difference = Math.abs(row.duration - song.duration);
+      if (difference > 2 || trackKey(row.trackName) !== title || trackKey(row.artistName) !== artist) continue;
+      const plain = typeof row.plainLyrics === "string" && row.plainLyrics.length <= 32e3 ? row.plainLyrics.trim() : "";
+      const timed = typeof row.syncedLyrics === "string" && row.syncedLyrics.length <= 32e3 ? parseLrc(row.syncedLyrics) : [];
+      const reliableTiming = timed.some((line) => line.text) && timed.length <= 1500 && timed.at(-1).time < song.duration + 2;
+      if (row.instrumental === true) candidates.push({ difference, lyrics: { kind: "instrumental" } });
+      else if (reliableTiming) candidates.push({ difference, lyrics: { kind: "synced", lines: timed } });
+      else if (plain) candidates.push({ difference, lyrics: { kind: "plain", text: plain } });
+    }
+    candidates.sort((left, right) => left.difference - right.difference);
+    const nearest = candidates[0];
+    if (!nearest) return { kind: "missing" };
+    const close = candidates.filter((candidate) => candidate.difference <= nearest.difference + 0.75);
+    const selected = close.find((candidate) => candidate.lyrics.kind === "synced") ?? nearest;
+    const signature = (result) => {
+      if (result.kind === "instrumental") return "";
+      return trackKey(result.kind === "plain" ? result.text : result.lines.map((line) => line.text).join(" "));
+    };
+    const selectedText = signature(selected.lyrics);
+    for (const { lyrics, difference } of close) {
+      if (Math.abs(difference - selected.difference) > 0.25) continue;
+      if (lyrics.kind !== selected.lyrics.kind && lyrics.kind !== "instrumental" && selected.lyrics.kind !== "instrumental") continue;
+      if (signature(lyrics) !== selectedText) return { kind: "ambiguous" };
+      if (lyrics.kind === "synced" && selected.lyrics.kind === "synced") {
+        const selectedLines = selected.lyrics.lines.filter((line) => line.text);
+        const otherLines = lyrics.lines.filter((line) => line.text);
+        if (otherLines.length !== selectedLines.length || otherLines.some((line, index) => Math.abs(line.time - selectedLines[index].time) > 2)) {
+          return { kind: "ambiguous" };
+        }
+      }
+    }
+    return selected.lyrics;
+  }
+  var storageKey = "lyricsLookup";
+  var spacing = 350;
+  var pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  var LyricsLookup = class {
+    constructor(fetcher, client, storage) {
+      this.fetcher = fetcher;
+      this.client = client;
+      this.storage = storage;
+      this.requests = /* @__PURE__ */ new Map();
+      this.tail = Promise.resolve();
+    }
+    search(song, retry = false) {
+      if (!validSong(song)) return Promise.resolve({ kind: "invalid" });
+      const key = JSON.stringify([trackKey(song.title), trackKey(song.artist), Math.round(song.duration * 10)]);
+      const pending = this.requests.get(key);
+      if (pending) return pending;
+      if (this.requests.size >= 4) return Promise.resolve({ kind: "error" });
+      const request = this.tail.then(async () => {
+        this.state ??= this.storage?.get(storageKey).then((values) => values[storageKey]).catch(() => void 0).then((stored) => stored ?? this.empty()) ?? Promise.resolve(this.empty());
+        const state = await this.state;
+        const now = Date.now();
+        state.cache = state.cache.filter((entry) => entry.expiry > now);
+        const cached = state.cache.find((entry) => entry.key === key);
+        if (cached && !retry) return cached.result;
+        if (state.retryAt > now) return { kind: "limited", retryAt: state.retryAt };
+        const delay = state.lastFinished + spacing - now;
+        if (delay > 0) await pause(delay);
+        const result = await this.fetchLyrics(song, state);
+        state.lastFinished = Date.now();
+        if (result.kind !== "limited" && result.kind !== "error") {
+          const lifetime = result.kind === "synced" || result.kind === "plain" ? 30 * 6e4 : 5 * 6e4;
+          state.cache = [
+            { key, result, expiry: state.lastFinished + lifetime },
+            ...state.cache.filter((entry) => entry.key !== key)
+          ].slice(0, 12);
+        }
+        await this.storage?.set({ [storageKey]: state }).catch(() => void 0);
+        return result;
+      }).catch(() => ({ kind: "error" })).finally(() => this.requests.delete(key));
+      this.tail = request;
+      this.requests.set(key, request);
+      return request;
+    }
+    empty() {
+      return { cache: [], retryAt: 0, lastFinished: 0 };
+    }
+    async fetchLyrics(song, state) {
+      const endpoint = new URL("https://lrclib.net/api/search");
+      endpoint.searchParams.set("track_name", song.title.trim());
+      endpoint.searchParams.set("artist_name", song.artist.trim());
+      try {
+        const response = await this.fetcher(endpoint, {
+          headers: { "X-User-Agent": this.client, Accept: "application/json" },
+          credentials: "omit",
+          redirect: "error",
+          signal: AbortSignal.timeout(8e3)
+        });
+        const retryAfter = response.headers.get("Retry-After");
+        if (response.status === 429 || response.status === 503 && retryAfter) {
+          const now = Date.now();
+          const ms = /^\d+$/.test(retryAfter ?? "") ? Number(retryAfter) * 1e3 : Date.parse(retryAfter ?? "") - now;
+          const wait = Number.isFinite(ms) ? Math.max(1e3, ms) : 3e4;
+          state.retryAt = now + wait * (1 + Math.random() * 0.25);
+          return { kind: "limited", retryAt: state.retryAt };
+        }
+        if (response.status === 404) return { kind: "missing" };
+        if (response.status === 400) return { kind: "invalid" };
+        if (!response.ok || !response.headers.get("Content-Type")?.includes("application/json")) return { kind: "error" };
+        return matchLyrics(await response.json(), song);
+      } catch {
+        return { kind: "error" };
+      }
+    }
+  };
+  function installLyricsLookup() {
+    const lookup = new LyricsLookup(
+      fetch.bind(globalThis),
+      "MoodShift/" + chrome.runtime.getManifest().version + " (https://github.com/Kgoel07/MoodShift)",
+      chrome.storage.session
+    );
+    chrome.runtime.onMessage.addListener((message, sender, reply) => {
+      if (message.target !== "lyrics" || sender.url !== chrome.runtime.getURL("sidepanel.html")) return;
+      const query = message.query;
+      if (!query || typeof query.title !== "string" || typeof query.artist !== "string") return;
+      void lookup.search(query, message.retry === true).then(reply);
+      return true;
+    });
+  }
+
   // extension/src/background.ts
+  installLyricsLookup();
   var offscreenUrl = chrome.runtime.getURL("offscreen.html");
   var creating;
   var operations = Promise.resolve();

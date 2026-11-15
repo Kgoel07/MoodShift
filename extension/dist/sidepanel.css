@@ -80,6 +80,35 @@ button:disabled { opacity: .55; cursor: default; }
 #stems button { font-size: 12px; padding-inline: 9px; }
 #stems button[aria-pressed="true"] { color: var(--accent); border-color: #3e5853; }
 #stem-status:not(:empty) { color: var(--muted); font-size: 11px; margin-top: 5px; }
+#lyrics { margin-top: 15px; padding-top: 10px; border-top: 1px solid var(--line); }
+#lyrics-status, #lyrics-offset-help { color: var(--muted); font-size: 11px; margin-top: 4px; }
+#lyrics-viewport {
+  position: relative;
+  max-height: 11rem;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+#lyrics-viewport p { white-space: pre-wrap; overflow-wrap: anywhere; padding: 3px 5px; }
+#lyrics-viewport [aria-current="true"] { color: var(--accent); background: #283b3a; border-radius: 5px; }
+#lyrics-search { margin-top: 8px; }
+#lyrics-search label { font-size: 12px; }
+#lyrics-search input:not([type="checkbox"]) {
+  max-width: 100%;
+  padding: 4px 6px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+#lyrics-search input[type="text"] { display: block; width: 100%; margin: 2px 0 5px; }
+.lyrics-options { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 9px; }
+.lyrics-options input[type="number"] { width: 4.4em; }
+.lyrics-options input[type="checkbox"] { accent-color: var(--accent); }
+#lyrics-submit { margin-top: 6px; font-size: 12px; }
 #monitor {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

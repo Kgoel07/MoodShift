@@ -4,7 +4,7 @@ import { build } from 'esbuild';
 const dir = new URL('../extension/', import.meta.url);
 await mkdir(new URL('dist/', dir), { recursive: true });
 await build({
-  entryPoints: ['background', 'offscreen', 'sidepanel', 'stem-worker', 'stem-worklet']
+  entryPoints: ['background', 'offscreen', 'sidepanel', 'stem-worker', 'stem-worklet', 'youtube-playback']
     .map(name => `extension/src/${name}.ts`),
   outdir: 'extension/dist',
   bundle: true,
