@@ -10,3 +10,4 @@ server/.env
 !.env.stem.example
 .vercel/
 extension/dist-cloud/
+*.pem
