@@ -235,6 +235,9 @@ chrome.runtime.onMessage.addListener((message: AudioMessage, _sender, sendRespon
         capture.effects = next;
         capture.revision++;
       } else if (message.type === 'SET_MONITOR') {
+        if (message.baseRevision !== undefined && message.baseRevision !== capture.revision) {
+          return { ok: false, message: 'Effects changed before switching the monitor.' };
+        }
         if (message.monitor !== 'original' && message.monitor !== 'modified') throw new Error('Invalid monitor mode.');
         capture.engine.setMonitor(message.monitor);
         capture.monitor = message.monitor;

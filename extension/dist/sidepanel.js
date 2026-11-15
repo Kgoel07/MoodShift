@@ -31,6 +31,14 @@
     }
     return patch;
   }
+  function applyPatch(current, patch) {
+    return { ...current, ...clampPatch(patch) };
+  }
+  function clampEffects(input) {
+    const patch = clampPatch(input);
+    if (Object.keys(patch).length !== effectKeys.length) throw new Error("Expected all effect parameters.");
+    return applyPatch(neutralEffects, patch);
+  }
   var presets = {
     Dreamy: Object.freeze({ ...neutralEffects, reverbMix: 0.33, trebleDb: -2 }),
     Warm: Object.freeze({ ...neutralEffects, bassDb: 2, trebleDb: -3 }),
@@ -50,11 +58,11 @@
       this.playback = null;
       this.revision++;
     }
-    receive(source, snapshot) {
+    receive(source, snapshot2) {
       if (source !== this.source) return "ignored";
       const previous = this.playback;
-      const changed = previous?.videoId !== snapshot?.videoId || previous?.song.title !== snapshot?.song.title || previous?.song.artist !== snapshot?.song.artist || previous?.ad !== snapshot?.ad || Math.round((previous?.song.duration ?? 0) * 10) !== Math.round((snapshot?.song.duration ?? 0) * 10);
-      this.playback = snapshot;
+      const changed = previous?.videoId !== snapshot2?.videoId || previous?.song.title !== snapshot2?.song.title || previous?.song.artist !== snapshot2?.song.artist || previous?.ad !== snapshot2?.ad || Math.round((previous?.song.duration ?? 0) * 10) !== Math.round((snapshot2?.song.duration ?? 0) * 10);
+      this.playback = snapshot2;
       if (changed) this.revision++;
       return changed ? "changed" : "playback";
     }
@@ -514,7 +522,7 @@
     return diagram;
   }
   function mountChords(root) {
-    const details = root;
+    const details2 = root;
     const status2 = root.querySelector("#chords-status");
     const content = root.querySelector("#chords-content");
     const progression = root.querySelector("#chord-progression");
@@ -582,10 +590,10 @@
       showDiagram(found[selected ?? position.current]?.chord);
     }
     function sync() {
-      session.setPlayback(details.open ? playback : null);
-      if (details.open) render2();
+      session.setPlayback(details2.open ? playback : null);
+      if (details2.open) render2();
     }
-    details.addEventListener("toggle", sync);
+    details2.addEventListener("toggle", sync);
     retry.addEventListener("click", () => session.retry());
     return {
       setPlayback(update, timingOffset) {
@@ -600,6 +608,253 @@
   var meterChannel = "moodshift-meter";
   function toWorker(command2) {
     return chrome.runtime.sendMessage({ ...command2, target: "worker" });
+  }
+
+  // extension/src/saved-presets.ts
+  var savedPresetsKey = "moodshiftSavedPresets";
+  function details(name, description) {
+    const trimmed = name.trim();
+    const note = description?.trim();
+    if (!trimmed || trimmed.length > 64 || (note?.length ?? 0) > 200) {
+      throw new Error("Enter a name up to 64 characters and an optional description up to 200.");
+    }
+    return { name: trimmed, description: note || void 0 };
+  }
+  function validDate(value) {
+    return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+  }
+  function validatePreset(value) {
+    const preset = value;
+    if (preset?.schemaVersion !== 1 || typeof preset.id !== "string" || !/^[0-9a-f-]{36}$/i.test(preset.id) || !validDate(preset.createdAt) || !validDate(preset.updatedAt) || preset.updatedAt < preset.createdAt || typeof preset.name !== "string" || preset.description !== void 0 && typeof preset.description !== "string" || preset.stemMode !== "full" && preset.stemMode !== "instrumental" && preset.stemMode !== "vocals" || preset.monitor !== "original" && preset.monitor !== "modified") {
+      throw new Error("This preset uses an invalid or unsupported format.");
+    }
+    return {
+      schemaVersion: 1,
+      id: preset.id,
+      createdAt: preset.createdAt,
+      updatedAt: preset.updatedAt,
+      ...details(preset.name, preset.description),
+      audioSettings: clampEffects(preset.audioSettings),
+      stemMode: preset.stemMode,
+      monitor: preset.monitor
+    };
+  }
+  function storedPreset(value) {
+    try {
+      return validatePreset(value);
+    } catch {
+      return void 0;
+    }
+  }
+  function snapshot(capture) {
+    if (capture.stem.phase === "loading" || capture.stem.phase === "buffering") {
+      throw new Error("Wait for stem selection to finish before saving.");
+    }
+    return { audioSettings: capture.effects, stemMode: capture.stem.mode, monitor: capture.monitor };
+  }
+  async function read() {
+    const data = (await chrome.storage.local.get(savedPresetsKey))[savedPresetsKey];
+    if (data === void 0) return [];
+    if (!Array.isArray(data)) throw new Error("Saved presets could not be read.");
+    return data;
+  }
+  async function listPresets() {
+    const rows = await read();
+    const presets2 = rows.map(storedPreset).filter((preset) => preset !== void 0);
+    return { presets: presets2, skipped: rows.length - presets2.length };
+  }
+  async function editPreset(edit) {
+    return navigator.locks.request(savedPresetsKey, async () => {
+      const rows = await read();
+      const existing = rows.map(storedPreset);
+      const index = edit.type === "save" ? rows.length : existing.findIndex((preset2) => preset2?.id === edit.id);
+      if (index < 0) throw new Error("This preset is no longer available.");
+      if (edit.type === "delete") {
+        rows.splice(index, 1);
+        await chrome.storage.local.set({ [savedPresetsKey]: rows });
+        return;
+      }
+      const updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      const saved = existing[index];
+      const preset = validatePreset(edit.type === "save" ? {
+        ...snapshot(edit.capture),
+        ...details(edit.name, edit.description),
+        id: crypto.randomUUID(),
+        createdAt: updatedAt,
+        updatedAt,
+        schemaVersion: 1
+      } : {
+        ...saved,
+        updatedAt: saved && saved.updatedAt > updatedAt ? saved.updatedAt : updatedAt,
+        ...edit.type === "rename" ? details(edit.name, edit.description) : snapshot(edit.capture)
+      });
+      if (existing.some((row) => row && row.id !== preset.id && row.name.toLowerCase() === preset.name.toLowerCase())) {
+        throw new Error("A preset already uses this name. Choose another name or update that preset.");
+      }
+      rows[index] = preset;
+      await chrome.storage.local.set({ [savedPresetsKey]: rows });
+      return preset.id;
+    });
+  }
+  async function applySavedPreset(input, capture, current, send = toWorker) {
+    const preset = validatePreset(input);
+    const sessionId = capture.session.id;
+    const assertCurrent = () => {
+      if (!current()) throw new Error("Preset application was superseded.");
+    };
+    const requireCapture = (reply) => {
+      assertCurrent();
+      if (!reply.ok) throw new Error(reply.message);
+      if (reply.status.phase !== "capturing" || reply.status.session.id !== sessionId) {
+        throw new Error("The selected tab changed during preset application.");
+      }
+      return reply.status;
+    };
+    let status2 = requireCapture(await send({
+      type: "APPLY_EFFECTS",
+      sessionId,
+      patch: preset.audioSettings,
+      baseRevision: capture.revision
+    }));
+    const matches = () => effectKeys.every((key) => status2.effects[key] === preset.audioSettings[key]);
+    if (!matches()) throw new Error("Audio settings changed during preset application.");
+    let limitation;
+    if (status2.stem.mode !== preset.stemMode || preset.stemMode !== "full" && status2.stem.phase !== "active") {
+      const reply = await send({ type: "SET_STEM", sessionId, mode: preset.stemMode, baseRevision: status2.revision });
+      assertCurrent();
+      if (reply.ok) status2 = requireCapture(reply);
+      else {
+        limitation = reply.message;
+        status2 = requireCapture(await send({ type: "GET_STATUS" }));
+        if (!matches()) throw new Error("Audio settings changed during preset application.");
+      }
+    }
+    if (status2.monitor !== preset.monitor) {
+      status2 = requireCapture(await send({ type: "SET_MONITOR", sessionId, monitor: preset.monitor, baseRevision: status2.revision }));
+    }
+    if (!matches() || status2.monitor !== preset.monitor) throw new Error("Audio settings changed during preset application.");
+    if (status2.stem.mode !== preset.stemMode || preset.stemMode !== "full" && status2.stem.phase !== "active") {
+      limitation ??= "The requested stem is unavailable.";
+    }
+    return { status: status2, limitation };
+  }
+
+  // extension/src/saved-presets-panel.ts
+  function mountSavedPresets(root, readCapture2, restore) {
+    const query = (selector) => root.querySelector(selector);
+    const select = query("#saved-preset-list");
+    const name = query("#saved-preset-name");
+    const description = query("#saved-preset-description");
+    const save = query("#saved-preset-save");
+    const apply = query("#saved-preset-apply");
+    const rename = query("#saved-preset-rename");
+    const update = query("#saved-preset-update");
+    const remove = query("#saved-preset-delete");
+    const status2 = query("#saved-preset-status");
+    const notice = query("#saved-preset-notice");
+    let presets2 = [];
+    let captureReady = false;
+    let busy = false;
+    let needsReload = false;
+    let reloadId = 0;
+    function controls2() {
+      const exists = presets2.some((preset) => preset.id === select.value);
+      select.disabled = busy;
+      name.disabled = busy;
+      description.disabled = busy;
+      save.disabled = busy || !captureReady || !name.value.trim();
+      apply.disabled = busy || !captureReady || !exists;
+      update.disabled = busy || !captureReady || !exists;
+      rename.disabled = busy || !exists || !name.value.trim();
+      remove.disabled = busy || !exists;
+    }
+    function fillName() {
+      const preset = presets2.find((item) => item.id === select.value);
+      name.value = preset?.name ?? "";
+      description.value = preset?.description ?? "";
+      controls2();
+    }
+    async function reload(preferred = select.value) {
+      const id = ++reloadId;
+      const result = await listPresets();
+      if (id !== reloadId) return;
+      presets2 = result.presets;
+      select.replaceChildren(
+        new Option(presets2.length ? "Select a saved preset" : "No saved presets", ""),
+        ...presets2.map((preset) => new Option(preset.name, preset.id))
+      );
+      select.value = presets2.some((preset) => preset.id === preferred) ? preferred : "";
+      notice.textContent = result.skipped ? "Some stored presets use an invalid or unsupported format." : "";
+      controls2();
+    }
+    async function run(work) {
+      if (busy) return;
+      busy = true;
+      status2.textContent = "";
+      controls2();
+      try {
+        status2.textContent = await work();
+      } catch (error) {
+        status2.textContent = error instanceof Error ? error.message : "Could not access saved presets.";
+      } finally {
+        busy = false;
+        controls2();
+        if (needsReload) {
+          needsReload = false;
+          refresh2();
+        }
+      }
+    }
+    select.addEventListener("change", () => {
+      fillName();
+      status2.textContent = "";
+    });
+    name.addEventListener("input", controls2);
+    save.addEventListener("click", () => void run(async () => {
+      const id = await editPreset({ type: "save", name: name.value, description: description.value, capture: await readCapture2() });
+      await reload(id);
+      fillName();
+      return "Preset saved.";
+    }));
+    rename.addEventListener("click", () => void run(async () => {
+      const id = await editPreset({ type: "rename", id: select.value, name: name.value, description: description.value });
+      await reload(id);
+      fillName();
+      return "Preset details saved.";
+    }));
+    update.addEventListener("click", () => void run(async () => {
+      await editPreset({ type: "update", id: select.value, capture: await readCapture2() });
+      await reload();
+      return "Preset audio settings updated.";
+    }));
+    remove.addEventListener("click", () => void run(async () => {
+      await editPreset({ type: "delete", id: select.value });
+      await reload("");
+      fillName();
+      return "Preset deleted.";
+    }));
+    apply.addEventListener("click", () => void run(async () => {
+      const { presets: current } = await listPresets();
+      const preset = current.find((item) => item.id === select.value);
+      if (!preset) throw new Error("This preset is no longer available.");
+      status2.textContent = "Applying preset\u2026";
+      return restore(preset);
+    }));
+    const refresh2 = () => void reload().catch(() => {
+      notice.textContent = "Could not read saved presets.";
+    });
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local" || !changes[savedPresetsKey]) return;
+      if (busy) needsReload = true;
+      else refresh2();
+    });
+    refresh2();
+    return {
+      setCaptureReady(ready) {
+        captureReady = ready;
+        controls2();
+      }
+    };
   }
 
   // extension/src/shared/types.ts
@@ -677,9 +932,12 @@
   var queuedEdits = {};
   var editTimer;
   var commandPending = false;
+  var presetApplying = false;
   var interpretation;
+  var savedPresets = mountSavedPresets(document.querySelector("#saved-presets"), readCapture, restorePreset);
   function updateApply() {
     applyButton.disabled = status.phase !== "capturing" || stopping || commandPending || interpretation !== void 0 || Object.keys(queuedEdits).length > 0 || !promptInput.value.trim();
+    savedPresets.setCaptureReady(status.phase === "capturing" && !stopping && !commandPending && !interpretation && !Object.keys(queuedEdits).length && status.stem.phase !== "loading" && status.stem.phase !== "buffering");
   }
   function cancelInterpretation() {
     interpretation?.controller.abort();
@@ -765,6 +1023,7 @@
       clearEdits();
       commandId++;
       commandPending = false;
+      presetApplying = false;
       cancelInterpretation();
       stopping = false;
       feedback.textContent = "";
@@ -772,8 +1031,8 @@
     status = next;
     lyrics.setSource(next.phase === "capturing" ? next.session : void 0);
     updateApply();
-    const enabled = next.phase === "capturing" && !stopping;
-    stopButton.disabled = !enabled;
+    stopButton.disabled = next.phase !== "capturing" || stopping;
+    const enabled = !stopButton.disabled && !presetApplying;
     controls.disabled = !enabled;
     for (const button of presetGroup.querySelectorAll("button")) button.disabled = !enabled;
     for (const button of monitorButtons) {
@@ -821,6 +1080,40 @@
       case "error":
         statusLabel.textContent = `Error \xB7 ${next.message}`;
         break;
+    }
+  }
+  async function readCapture() {
+    if (status.phase !== "capturing" || commandPending || stopping || interpretation || Object.keys(queuedEdits).length) {
+      throw new Error("Wait for the current audio change to finish.");
+    }
+    const sessionId = status.session.id;
+    const reply = await toWorker({ type: "GET_STATUS" });
+    if (!reply.ok || reply.status.phase !== "capturing" || reply.status.session.id !== sessionId || status.phase !== "capturing" || status.session.id !== sessionId || commandPending || stopping || interpretation || Object.keys(queuedEdits).length) {
+      throw new Error("Select a tab and wait for the current audio change to finish.");
+    }
+    return reply.status;
+  }
+  async function restorePreset(preset) {
+    const capture = await readCapture();
+    const id = ++commandId;
+    commandPending = true;
+    presetApplying = true;
+    refreshId++;
+    render(status);
+    const current = () => id === commandId;
+    try {
+      const result = await applySavedPreset(preset, capture, current);
+      if (!current()) throw new Error("Preset application was superseded.");
+      refreshId++;
+      render(result.status);
+      return result.limitation ? `Effects and monitor applied. Stem unavailable \xB7 ${result.limitation}` : `Applied \u2713 \xB7 ${preset.name}`;
+    } finally {
+      if (current()) {
+        presetApplying = false;
+        commandPending = false;
+        render(status);
+        void refresh();
+      }
     }
   }
   async function command(message, detail = "", stemMode) {
@@ -878,6 +1171,7 @@
     clearEdits();
     cancelInterpretation();
     stopping = true;
+    presetApplying = false;
     render(status);
     void command({ type: "STOP", sessionId: status.session.id });
   });

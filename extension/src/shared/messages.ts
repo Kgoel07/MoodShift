@@ -2,7 +2,7 @@ import type { AudioFeatures, CaptureSession, CaptureStatus, MonitorMode, StemMod
 import type { EffectPatch } from './effects';
 
 type EffectChange = { type: 'APPLY_EFFECTS'; sessionId: string; patch: EffectPatch; baseRevision?: number };
-type MonitorChange = { type: 'SET_MONITOR'; sessionId: string; monitor: MonitorMode };
+type MonitorChange = { type: 'SET_MONITOR'; sessionId: string; monitor: MonitorMode; baseRevision?: number };
 type StemChange = { type: 'SET_STEM'; sessionId: string; mode: StemMode; baseRevision?: number };
 
 export type WorkerCommand =

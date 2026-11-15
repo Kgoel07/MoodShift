@@ -1,6 +1,8 @@
 import { effectKeys, effectSpecs, neutralEffects, presets, type EffectPatch } from './shared/effects';
 import { mountLyrics } from './lyrics-panel';
 import { mountChords } from './chords-panel';
+import { mountSavedPresets } from './saved-presets-panel';
+import { applySavedPreset, type SavedPreset } from './saved-presets';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
 import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
 import { stemDelaySeconds } from './shared/stem-pcm';
@@ -27,11 +29,16 @@ let stopping = false;
 let queuedEdits: EffectPatch = {};
 let editTimer: ReturnType<typeof setTimeout> | undefined;
 let commandPending = false;
+let presetApplying = false;
 let interpretation: { id: string; controller: AbortController } | undefined;
+const savedPresets = mountSavedPresets(document.querySelector<HTMLElement>('#saved-presets')!, readCapture, restorePreset);
 
 function updateApply(): void {
   applyButton.disabled = status.phase !== 'capturing' || stopping || commandPending
     || interpretation !== undefined || Object.keys(queuedEdits).length > 0 || !promptInput.value.trim();
+  savedPresets.setCaptureReady(status.phase === 'capturing' && !stopping && !commandPending
+    && !interpretation && !Object.keys(queuedEdits).length
+    && status.stem.phase !== 'loading' && status.stem.phase !== 'buffering');
 }
 
 function cancelInterpretation(): void {
@@ -130,6 +137,7 @@ function render(next: CaptureStatus): void {
     clearEdits();
     commandId++;
     commandPending = false;
+    presetApplying = false;
     cancelInterpretation();
     stopping = false;
     feedback.textContent = '';
@@ -137,8 +145,8 @@ function render(next: CaptureStatus): void {
   status = next;
   lyrics.setSource(next.phase === 'capturing' ? next.session : undefined);
   updateApply();
-  const enabled = next.phase === 'capturing' && !stopping;
-  stopButton.disabled = !enabled;
+  stopButton.disabled = next.phase !== 'capturing' || stopping;
+  const enabled = !stopButton.disabled && !presetApplying;
   controls.disabled = !enabled;
   for (const button of presetGroup.querySelectorAll('button')) button.disabled = !enabled;
   for (const button of monitorButtons) {
@@ -173,6 +181,44 @@ function render(next: CaptureStatus): void {
     case 'starting': statusLabel.textContent = `Capturing… · ${next.source.title}`; break;
     case 'capturing': statusLabel.textContent = `Listening to this tab · ${next.session.title}`; break;
     case 'error': statusLabel.textContent = `Error · ${next.message}`; break;
+  }
+}
+
+async function readCapture() {
+  if (status.phase !== 'capturing' || commandPending || stopping || interpretation || Object.keys(queuedEdits).length) {
+    throw new Error('Wait for the current audio change to finish.');
+  }
+  const sessionId = status.session.id;
+  const reply = await toWorker({ type: 'GET_STATUS' });
+  if (!reply.ok || reply.status.phase !== 'capturing' || reply.status.session.id !== sessionId
+    || status.phase !== 'capturing' || status.session.id !== sessionId || commandPending || stopping
+    || interpretation || Object.keys(queuedEdits).length) {
+    throw new Error('Select a tab and wait for the current audio change to finish.');
+  }
+  return reply.status;
+}
+
+async function restorePreset(preset: SavedPreset): Promise<string> {
+  const capture = await readCapture();
+  const id = ++commandId;
+  commandPending = true;
+  presetApplying = true;
+  refreshId++;
+  render(status);
+  const current = () => id === commandId;
+  try {
+    const result = await applySavedPreset(preset, capture, current);
+    if (!current()) throw new Error('Preset application was superseded.');
+    refreshId++;
+    render(result.status);
+    return result.limitation ? `Effects and monitor applied. Stem unavailable · ${result.limitation}` : `Applied ✓ · ${preset.name}`;
+  } finally {
+    if (current()) {
+      presetApplying = false;
+      commandPending = false;
+      render(status);
+      void refresh();
+    }
   }
 }
 
@@ -231,6 +277,7 @@ stopButton.addEventListener('click', () => {
   clearEdits();
   cancelInterpretation();
   stopping = true;
+  presetApplying = false;
   render(status);
   void command({ type: 'STOP', sessionId: status.session.id });
 });

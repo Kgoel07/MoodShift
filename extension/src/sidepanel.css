@@ -75,6 +75,20 @@ button:disabled { opacity: .55; cursor: default; }
 .preset-section { margin: 19px 0 17px; }
 #presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 #presets button { font-size: 12px; padding-inline: 9px; }
+#saved-presets { margin: -8px 0 14px; }
+.saved-preset-fields { display: grid; gap: 3px; font-size: 12px; }
+.saved-preset-fields input, .saved-preset-fields select {
+  min-width: 0;
+  margin-bottom: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.saved-preset-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 5px 0 8px; font-size: 12px; }
+#saved-preset-status, #saved-preset-notice { color: var(--muted); font-size: 11px; margin-bottom: 5px; overflow-wrap: anywhere; }
 .stem-section { margin-top: 14px; }
 #stems { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 #stems button { font-size: 12px; padding-inline: 9px; }

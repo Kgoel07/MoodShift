@@ -8,19 +8,6 @@ import { setTimeout as wait } from 'node:timers/promises';
 const testDir = resolve('.moodshift-test');
 await mkdir(testDir, { recursive: true });
 const profile = await mkdtemp(resolve(testDir, 'profile-'));
-const chrome = spawn(process.env.MOODSHIFT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', [
-  '--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
-  '--user-data-dir=' + profile,
-  '--remote-debugging-pipe', '--enable-unsafe-extension-debugging', 'about:blank',
-], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true });
-const chromeExited = new Promise(done => {
-  chrome.once('exit', done);
-  chrome.once('error', error => { console.error(error.message); done(); });
-});
-chrome.stdio[3].on('error', () => undefined);
-chrome.stderr.on('data', data => {
-  if (process.env.CHROME_TEST_DEBUG) process.stderr.write(data);
-});
 const stemTest = Boolean(process.env.MOODSHIFT_STEM_TEST);
 const stemYouTube = Boolean(process.env.MOODSHIFT_STEM_YOUTUBE);
 const stemFixture = stemTest && !stemYouTube ? await readFile('.stem-gate/assets/fixture.ogg') : undefined;
@@ -44,15 +31,37 @@ const url = 'http://127.0.0.1:' + fixture.address().port;
 let lastId = 0;
 let data = '';
 const requests = new Map();
-chrome.stdio[4].on('data', chunk => {
-  data += chunk.toString();
-  let end;
-  while ((end = data.indexOf('\0')) !== -1) {
-    const value = JSON.parse(data.slice(0, end));
-    data = data.slice(end + 1);
-    requests.get(value.id)?.(value);
-  }
-});
+function launchChrome() {
+  const processHandle = spawn(process.env.MOODSHIFT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', [
+    '--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
+    '--user-data-dir=' + profile,
+    '--remote-debugging-pipe', '--enable-unsafe-extension-debugging', 'about:blank',
+  ], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true });
+  const exited = new Promise(done => {
+    processHandle.once('exit', done);
+    processHandle.once('error', error => { console.error(error.message); done(); });
+  });
+  processHandle.stdio[3].on('error', () => undefined);
+  processHandle.stderr.on('data', chunk => {
+    if (process.env.CHROME_TEST_DEBUG) process.stderr.write(chunk);
+  });
+  data = '';
+  processHandle.stdio[4].on('data', chunk => {
+    data += chunk.toString();
+    let end;
+    while ((end = data.indexOf('\0')) !== -1) {
+      const value = JSON.parse(data.slice(0, end));
+      data = data.slice(end + 1);
+      requests.get(value.id)?.(value);
+    }
+  });
+  return [processHandle, exited];
+}
+let [chrome, chromeExited] = launchChrome();
+async function closeChrome() {
+  await send('Browser.close').catch(() => undefined);
+  await chromeExited;
+}
 function send(method, params = {}, sessionId) {
   const id = ++lastId;
   return new Promise((resolve, reject) => {
@@ -143,6 +152,14 @@ try {
     await click('Original');
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.monitor, 'original');
+    if (process.env.MOODSHIFT_PRESETS_TEST) {
+      await evaluate(view, `document.querySelector('#saved-presets').open = true;
+        const name = document.querySelector('#saved-preset-name');
+        name.value = 'Restart preset'; name.dispatchEvent(new Event('input'));
+        document.querySelector('#saved-preset-save').click()`);
+      await until(() => evaluate(view, "document.querySelector('#saved-preset-status').textContent"),
+        status => status === 'Preset saved.', 'Saving exact preset');
+    }
     await click('Modified');
     await click('Reset');
     await wait(350);
@@ -513,6 +530,39 @@ try {
     await until(playhead, position => position > before + 1.5, 'YouTube playback after Stop did not advance');
     await send('Target.closeTarget', { targetId: backgroundPage });
     console.log('YouTube signal, Dreamy ACK, uninterrupted playhead, background capture, panel reopen and Stop passed.');
+  }
+  if (process.env.MOODSHIFT_PRESETS_TEST) {
+    await closeChrome();
+    [chrome, chromeExited] = launchChrome();
+    const reloaded = await send('Extensions.loadUnpacked', { path: resolve('extension/dist') });
+    assert.equal(reloaded.id, id);
+    const restarted = await send('Target.createTarget', { url: url + '/?restarted', forTab: true });
+    const restartedPage = await find(t => t.type === 'page' && t.url === url + '/?restarted', 'restarted tone page');
+    const restartedSource = await attach(restartedPage.targetId);
+    await until(() => evaluate(restartedSource, "Boolean(document.querySelector('button'))"), Boolean, 'Restarted tone player');
+    await evaluate(restartedSource, "document.querySelector('button').click(); tone.resume()");
+    await send('Extensions.triggerAction', { id, targetId: restarted.targetId });
+    const restartedPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'restarted side panel')).targetId);
+    const readStatus = () => evaluate(restartedPanel, "chrome.runtime.sendMessage({target:'worker',type:'GET_STATUS'})");
+    await until(readStatus, reply => reply.status.phase === 'capturing', 'Restarted capture');
+    assert.equal((await readStatus()).status.effects.reverbMix, 0);
+    await until(() => evaluate(restartedPanel,
+      "[...document.querySelector('#saved-preset-list').options].find(option => option.text === 'Restart preset')?.value"),
+      Boolean, 'Preset persisted across Chrome restart');
+    await evaluate(restartedPanel, `document.querySelector('#saved-presets').open = true;
+      window.fetch = () => { throw new Error('Preset restore must work offline'); };
+      const select = document.querySelector('#saved-preset-list');
+      select.value = [...select.options].find(option => option.text === 'Restart preset').value;
+      select.dispatchEvent(new Event('change'));
+      document.querySelector('#saved-preset-apply').click()`);
+    await until(() => evaluate(restartedPanel, "document.querySelector('#saved-preset-status').textContent"),
+      status => status === 'Applied ✓ · Restart preset', 'Offline preset ACK');
+    const saved = (await readStatus()).status;
+    assert.equal(saved.effects.reverbMix, 0.33);
+    assert.equal(saved.effects.trebleDb, -2);
+    assert.equal(saved.monitor, 'original');
+    assert.equal(saved.stem.mode, 'full');
+    console.log('Saved preset persisted across Chrome restart and restored exact DSP settings and monitor offline.');
   }
 } finally {
   helper?.kill();
