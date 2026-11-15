@@ -118,3 +118,13 @@ Cloud-build and deployment preparation checks are recorded in [CLOUD_DEPLOY_STAT
 | Stem timing with live chords | PASS (automated with a protocol fixture) | Chrome kept showing the chord in the audible Instrumental buffer after a seek and advanced when the new audio reached playout. A separate loopback test worker exercised the real Chrome routing. The existing laptop worker reported an active session during the hardware attempt. |
 | YouTube Songle in Chrome | PASS (automated) | Live timeline, diagrams, pause, seek, playback rate, correction, and Stop passed on the documented YouTube example. |
 | Signed-in Spotify playback and other live players | NOT RUN | Open **Advanced → Chords** on a playing tab and compare detected chords with a familiar track. |
+
+## Mood Scenes
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Typecheck, both extension builds, and focused tests | PASS (automated) | 34 tests across effects, saved presets, and stems. The six mixes are distinct, use bounded effects, and highlight only an exact match. |
+| Mood Scenes and saved presets in Chrome | PASS (automated) | Two-column grid, local application with zero Gemini calls, shared Home and Advanced state, clearing the highlight after an edit, and saving the customized mix across a Chrome restart. |
+| Karaoke in Chrome | PASS (automated with fixtures) | Effects applied before stem readiness, and Instrumental failure preserved the capture and Full Mix. Timed lyrics appeared on Home and returned to Advanced on navigation. A loopback test worker exercised successful Instrumental selection and the return to Full Mix when another scene was chosen. |
+| Optional live YouTube lyric seek | FAIL (also reproduced before Mood Scenes) | The “Code Monkey” test loaded synchronized lyrics but found no active highlight after seeking to 22 seconds. The deterministic timed-lyrics fixture passed. |
+| Listening and real stem separation | NOT RUN | Compare all six scenes by ear. Try Karaoke Night with the configured stem worker on a familiar track with synchronized lyrics. |

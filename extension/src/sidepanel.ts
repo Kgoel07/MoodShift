@@ -1,4 +1,5 @@
-import { effectKeys, effectSpecs, neutralEffects, presets, type EffectPatch } from './shared/effects';
+import { effectKeys, effectSpecs, neutralEffects, type EffectPatch } from './shared/effects';
+import { activeMoodScene, moodScenes, type MoodScene } from './shared/mood-scenes';
 import { mountLyrics } from './lyrics-panel';
 import { mountChords } from './chords-panel';
 import { mountSavedPresets } from './saved-presets-panel';
@@ -32,6 +33,7 @@ const inputStatus = document.querySelector<HTMLParagraphElement>('#input-status'
 const feedback = document.querySelector<HTMLParagraphElement>('#feedback')!;
 const controls = document.querySelector<HTMLFieldSetElement>('#controls')!;
 const presetGroup = document.querySelector<HTMLDivElement>('#presets')!;
+const resetEffects = document.querySelector<HTMLButtonElement>('#reset-effects')!;
 const monitorButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-mode]')];
 const stemButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-stem]')];
 const stemLabel = document.querySelector<HTMLParagraphElement>('#stem-status')!;
@@ -46,6 +48,7 @@ let queuedEdits: EffectPatch = {};
 let editTimer: ReturnType<typeof setTimeout> | undefined;
 let commandPending = false;
 let presetApplying = false;
+let karaokeRequested = false;
 let interpretation: { id: string; controller: AbortController } | undefined;
 const savedPresets = mountSavedPresets(document.querySelector<HTMLElement>('#saved-presets')!, readCapture, restorePreset);
 const personalization = mountPersonalization(document.querySelector<HTMLElement>('#personalization')!, () => {
@@ -110,6 +113,7 @@ const sliders = effectKeys.map(key => {
     cancelInterpretation();
     queuedEdits[key] = input.valueAsNumber;
     updateApply();
+    renderMoodSelection();
     value.textContent = displayValue(input.valueAsNumber, spec.unit);
     clearTimeout(editTimer);
     editTimer = setTimeout(flushEdits, 45);
@@ -118,15 +122,49 @@ const sliders = effectKeys.map(key => {
   return { key, input, value };
 });
 
-for (const [name, patch] of [...Object.entries(presets), ['Reset', neutralEffects] as const]) {
+const sceneButtons = moodScenes.map(scene => {
   const button = document.createElement('button');
   button.type = 'button';
-  button.textContent = name;
+  button.disabled = true;
+  button.className = 'mood-card';
+  button.dataset.mood = scene.id;
+  button.setAttribute('aria-label', scene.name);
+  button.setAttribute('aria-describedby', `${scene.id}-subtitle`);
+  button.setAttribute('aria-pressed', 'false');
+  const emoji = document.createElement('span');
+  emoji.className = 'mood-emoji';
+  emoji.textContent = scene.emoji;
+  emoji.setAttribute('aria-hidden', 'true');
+  const name = document.createElement('span');
+  name.className = 'mood-name';
+  name.textContent = scene.name;
+  const subtitle = document.createElement('span');
+  subtitle.className = 'mood-subtitle';
+  subtitle.id = `${scene.id}-subtitle`;
+  subtitle.textContent = scene.subtitle;
+  button.append(emoji, name, subtitle);
   button.addEventListener('click', () => {
+    if (status.phase !== 'capturing') return;
     clearEdits();
-    applyLocal(patch);
+    cancelInterpretation();
+    karaokeRequested = scene.stemMode === 'instrumental';
+    renderMoodSelection();
+    void command({ type: 'APPLY_EFFECTS', sessionId: status.session.id, patch: scene.effects }, scene.name, scene);
   });
   presetGroup.append(button);
+  return { button, scene };
+});
+
+resetEffects.addEventListener('click', () => {
+  clearEdits();
+  karaokeRequested = false;
+  applyLocal(neutralEffects);
+});
+
+function renderMoodSelection(): void {
+  const selected = activeMoodScene(status, queuedEdits);
+  for (const { button, scene } of sceneButtons) button.setAttribute('aria-pressed', String(selected === scene));
+  lyrics.setKaraokePreview(karaokeRequested || selected?.stemMode === 'instrumental');
 }
 
 function clearEdits(): void {
@@ -169,6 +207,7 @@ function render(next: CaptureStatus): void {
     commandId++;
     commandPending = false;
     presetApplying = false;
+    karaokeRequested = false;
     cancelInterpretation();
     stopping = false;
     feedback.textContent = '';
@@ -177,11 +216,13 @@ function render(next: CaptureStatus): void {
   chords.setCapture(nextId);
   lyrics.setSource(next.phase === 'capturing' ? next.session : undefined);
   lyrics.setTiming(next.phase === 'capturing' ? next.audioTiming : undefined);
+  renderMoodSelection();
   updateApply();
   stopButton.disabled = next.phase !== 'capturing' || stopping;
   const enabled = !stopButton.disabled && !presetApplying;
   controls.disabled = !enabled;
-  for (const button of presetGroup.querySelectorAll('button')) button.disabled = !enabled;
+  resetEffects.disabled = !enabled;
+  for (const { button } of sceneButtons) button.disabled = !enabled;
   for (const button of monitorButtons) {
     button.disabled = !enabled;
     button.setAttribute('aria-pressed', String(button.dataset.mode === (next.phase === 'capturing' ? next.monitor : 'modified')));
@@ -239,6 +280,7 @@ async function restorePreset(preset: SavedPreset): Promise<string> {
   const id = ++commandId;
   commandPending = true;
   presetApplying = true;
+  karaokeRequested = false;
   refreshId++;
   render(status);
   const current = () => id === commandId;
@@ -263,7 +305,9 @@ async function restorePreset(preset: SavedPreset): Promise<string> {
   }
 }
 
-async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, detail = '', stemMode?: StemMode): Promise<void> {
+async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, detail = '', stemRequest?: StemMode | MoodScene): Promise<void> {
+  const scene = typeof stemRequest === 'object' ? stemRequest : undefined;
+  const stemMode = typeof stemRequest === 'string' ? stemRequest : scene?.stemMode;
   const id = ++commandId;
   commandPending = true;
   updateApply();
@@ -273,14 +317,28 @@ async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, 
     let reply = await toWorker(message);
     if (id !== commandId) return;
     if (!reply.ok) throw new Error(reply.message);
-    if (message.type === 'APPLY_EFFECTS' && stemMode && reply.status.phase === 'capturing') {
+    if (scene && reply.status.phase === 'capturing' && reply.status.monitor !== 'modified') {
+      const { session, revision } = reply.status;
+      reply = await toWorker({ type: 'SET_MONITOR', sessionId: session.id, baseRevision: revision, monitor: 'modified' });
+      if (id !== commandId) return;
+      if (!reply.ok) throw new Error(reply.message);
+    }
+    if (message.type === 'APPLY_EFFECTS' && stemMode && reply.status.phase === 'capturing'
+      && (!scene || reply.status.stem.mode !== stemMode
+        || reply.status.stem.phase !== (stemMode === 'full' ? 'idle' : 'active'))) {
+      if (scene) {
+        refreshId++;
+        render(reply.status);
+        if (stemMode === 'instrumental') feedback.textContent = 'Karaoke effects applied. Preparing the instrumental mix…';
+      }
       reply = await toWorker({
         type: 'SET_STEM', mode: stemMode, sessionId: message.sessionId, baseRevision: reply.status.revision,
       });
       if (id !== commandId) return;
       if (!reply.ok) {
         console.warn('MoodShift could not switch the mix', reply.message);
-        feedback.textContent = `Effects applied. ${stemNotice(reply.message)}`;
+        feedback.textContent = scene?.stemMode === 'instrumental'
+          ? 'Karaoke effects applied. Instrumental is unavailable.' : `Effects applied. ${stemNotice(reply.message)}`;
         void refresh();
         return;
       }

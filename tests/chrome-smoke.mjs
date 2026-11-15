@@ -267,12 +267,20 @@ try {
       console.log(localStemsWithCloudApi ? `Loopback stem build loaded as extension ${id}.` : 'Offscreen cloud authentication passed through the service worker.');
       await selectPanel('home');
     }
-    const click = name => evaluate(view, `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)}).click()`);
-    await click('Dreamy');
+    const click = name => evaluate(view, `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)} || b.getAttribute('aria-label') === ${JSON.stringify(name)}).click()`);
+    const activeMood = () => evaluate(view, "document.querySelector('#presets [aria-pressed=true]')?.dataset.mood ?? null");
+    assert.equal(await evaluate(view, `document.querySelector('#preset-label').textContent === 'Choose Your Mood'
+      && document.querySelectorAll('#presets .mood-card').length === 6
+      && getComputedStyle(document.querySelector('#presets')).gridTemplateColumns.split(' ').length === 2`), true);
+    await evaluate(view, `window.originalMoodFetch = window.fetch;
+      window.moodFetches = 0;
+      window.fetch = (...args) => { window.moodFetches++; return window.originalMoodFetch(...args); };`);
+    await click('Cloud Nine');
     await wait(400);
     assert.match(await evaluate(view, "document.querySelector('#feedback').textContent"), /Applied/);
-    const afterDreamy = await evaluate(sw, read);
-    assert.equal(afterDreamy.status.effects?.reverbMix, 0.33);
+    const afterCloudNine = await evaluate(sw, read);
+    assert.equal(afterCloudNine.status.effects?.reverbMix, 0.4);
+    assert.equal(await activeMood(), 'cloud-nine');
     await evaluate(view, `window.presetLibrary = document.querySelector('#preset-library');
       document.querySelector('#home-tab').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
       document.querySelector('#advanced-presets').open = true;`);
@@ -280,16 +288,45 @@ try {
       && document.querySelector('#home-panel').hidden && !document.querySelector('#advanced-panel').hidden
       && document.querySelector('#advanced-presets').contains(window.presetLibrary)`), true);
     const afterNavigation = (await evaluate(sw, read)).status;
-    assert.equal(afterNavigation.session.id, afterDreamy.status.session.id);
-    assert.equal(afterNavigation.revision, afterDreamy.status.revision);
-    assert.deepEqual(afterNavigation.stem, afterDreamy.status.stem);
+    assert.equal(afterNavigation.session.id, afterCloudNine.status.session.id);
+    assert.equal(afterNavigation.revision, afterCloudNine.status.revision);
+    assert.deepEqual(afterNavigation.stem, afterCloudNine.status.stem);
+    assert.equal(await activeMood(), 'cloud-nine');
     assert.ok(afterNavigation.features.rms > 0.03);
-    assert.equal(await evaluate(view, "Number(document.querySelector('#effect-reverbMix').value)"), 0.33);
-    await click('Warm');
-    await until(async () => (await evaluate(sw, read)).status.effects.bassDb, value => value === 2, 'Advanced preset');
+    assert.equal(await evaluate(view, "Number(document.querySelector('#effect-reverbMix').value)"), 0.4);
+    await click('Rainy Evening');
+    await until(async () => (await evaluate(sw, read)).status.effects.bassDb, value => value === 1.8, 'Advanced scene');
     await selectPanel('home');
-    await click('Dreamy');
-    await until(async () => (await evaluate(sw, read)).status.effects.bassDb, value => value === 0, 'Home preset');
+    await click('Cloud Nine');
+    await until(async () => (await evaluate(sw, read)).status.effects.bassDb, value => value === -0.6, 'Home scene');
+    await click('Original');
+    await until(async () => (await evaluate(sw, read)).status.monitor, monitor => monitor === 'original', 'Original mix before Karaoke');
+    await evaluate(view, `window.originalMoodMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
+      chrome.runtime.sendMessage = (...args) => args[0]?.type === 'SET_STEM' && args[0].mode === 'instrumental'
+        ? new Promise(resolve => { window.finishKaraoke = () => resolve({ ok: false, message: 'Stem worker unavailable.' }); })
+        : window.originalMoodMessage(...args);`);
+    await click('Karaoke Night');
+    await until(() => evaluate(view, "typeof window.finishKaraoke === 'function'"), Boolean, 'Karaoke requested Instrumental');
+    assert.equal((await evaluate(sw, read)).status.effects.highpassHz, 45);
+    assert.equal((await evaluate(sw, read)).status.monitor, 'modified');
+    assert.equal(await evaluate(view, "Number(document.querySelector('#effect-highpassHz').value)"), 45);
+    assert.equal(await activeMood(), null);
+    await evaluate(view, 'window.finishKaraoke(); chrome.runtime.sendMessage = window.originalMoodMessage');
+    await until(() => evaluate(view, "document.querySelector('#feedback').textContent"),
+      text => text === 'Karaoke effects applied. Instrumental is unavailable.', 'Karaoke fallback');
+    assert.deepEqual((await evaluate(sw, read)).status.stem, { phase: 'idle', mode: 'full' });
+    assert.equal((await evaluate(sw, read)).status.session.id, afterCloudNine.status.session.id);
+    assert.equal(await activeMood(), null);
+    assert.equal(await evaluate(view, 'window.moodFetches'), 0);
+    assert.equal(await evaluate(view, "chrome.storage.local.get('moodshiftSavedPresets').then(data => data.moodshiftSavedPresets === undefined)"), true);
+    await evaluate(view, 'window.fetch = window.originalMoodFetch;');
+    await click('Cloud Nine');
+    await until(activeMood, value => value === 'cloud-nine', 'Cloud Nine restored');
+    await selectPanel('advanced');
+    await evaluate(view, "const treble = document.querySelector('#effect-trebleDb'); treble.value = '-2.7'; treble.dispatchEvent(new Event('input')); treble.dispatchEvent(new Event('change'))");
+    await until(async () => (await evaluate(sw, read)).status.effects.trebleDb, value => value === -2.7, 'Customized scene');
+    assert.equal(await activeMood(), null);
+    await selectPanel('home');
     await click('Original');
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.monitor, 'original');
@@ -302,7 +339,8 @@ try {
         status => status === 'Preset saved.', 'Saving exact preset');
     }
     await click('Modified');
-    await click('Reset');
+    await selectPanel('advanced');
+    await click('Reset effects');
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.effects.reverbMix, 0);
     await selectPanel('advanced');
@@ -311,6 +349,7 @@ try {
     assert.equal((await evaluate(sw, read)).status.effects.bassDb, 3.5);
     assert.ok(await evaluate(view, 'document.documentElement.scrollWidth <= innerWidth'));
     await selectPanel('home');
+    console.log('Mood Scenes applied locally, kept the same capture, and handled an unavailable Instrumental mix.');
     if (await evaluate(view, "Boolean(document.querySelector('#interpret'))")) {
       const getFeedback = () => evaluate(view, "document.querySelector('#feedback').textContent");
       const submit = () => evaluate(view, "(() => { const field = document.querySelector('#prompt'); field.value = 'A little more bass'; field.dispatchEvent(new Event('input')); document.querySelector('#interpret').requestSubmit(); })()");
@@ -353,11 +392,11 @@ try {
       await selectPanel('advanced');
       assert.match(await getFeedback(), /Interpreting/);
       assert.equal((await evaluate(sw, read)).status.revision, beforeSwitch.revision);
-      await click('Warm');
+      await click('Rainy Evening');
       await wait(300);
       await evaluate(view, 'window.releaseReply()');
       await wait(200);
-      assert.equal((await evaluate(sw, read)).status.effects.bassDb, 2);
+      assert.equal((await evaluate(sw, read)).status.effects.bassDb, 1.8);
       const staleRevision = await evaluate(sw, "chrome.runtime.sendMessage({target:'audio',type:'APPLY_EFFECTS',patch:{bassDb:8},sessionId:" + JSON.stringify(capture.status.session.id) + ",baseRevision:" + revision + "})");
       assert.equal(staleRevision.ok, false);
       await selectPanel('home');
@@ -504,10 +543,29 @@ try {
     await evaluate(page, "document.querySelector('audio').currentTime = 10");
     await until(() => query('#lyrics-viewport'), text => text === '', 'Caption clears at cue end');
     assert.equal(await evaluate(page, 'window.moodshiftMediaSessionBridge'), true);
+    await evaluate(view, `window.realLyricsSend = chrome.runtime.sendMessage.bind(chrome.runtime);
+      chrome.runtime.sendMessage = (...args) => {
+        if (args[0]?.target === 'lyrics' && args[0].query) {
+          return Promise.resolve({ kind: 'synced', lines: [{ time: 0, text: 'Sing the first line' }, { time: 8, text: 'Sing the second line' }] });
+        }
+        if (args[0]?.type === 'SET_STEM' && args[0].mode === 'instrumental') {
+          return Promise.resolve({ ok: false, message: 'Stem worker unavailable.' });
+        }
+        return window.realLyricsSend(...args);
+      };`);
     await evaluate(page, "setTestSong('Fixture Track A (Official Audio)')");
     await until(() => query('#current-song'), text => text === 'Fixture Track A · Fixture Artist', 'Main-world Media Session');
     await evaluate(page, "setTestSong('Fixture Track B (Live)')");
     await until(() => query('#current-song'), text => text === 'Fixture Track B (Live) · Fixture Artist', 'Automatic track change');
+    await until(() => query('#lyrics-status'), text => text === 'Synchronized lyrics', 'Timed lyric fixture');
+    await evaluate(view, "document.querySelector('#home-tab').click(); document.querySelector('[data-mood=karaoke-night]').click()");
+    const karaokeLine = () => query('#karaoke-lyrics #lyrics-viewport [aria-current=true]');
+    await until(karaokeLine, text => text === 'Sing the second line', 'Synced Karaoke lyrics on Home');
+    await until(() => query('#feedback'), text => text === 'Karaoke effects applied. Instrumental is unavailable.', 'Lyrics stay visible on fallback');
+    await evaluate(view, "document.querySelector('#advanced-tab').click()");
+    await until(() => query('#lyrics #lyrics-viewport [aria-current=true]'), text => text === 'Sing the second line', 'Same synced lyrics in Advanced');
+    await evaluate(view, "chrome.runtime.sendMessage = window.realLyricsSend; document.querySelector('#home-tab').click(); document.querySelector('[data-mood=cloud-nine]').click()");
+    await until(() => evaluate(view, "document.querySelector('#karaoke-lyrics').hidden"), Boolean, 'Leaving Karaoke hides lyrics from Home');
     assert.equal((await evaluate(sw, read)).status.session.id, capture.session.id);
     const windowId = await evaluate(sw, `chrome.tabs.get(${capture.session.tabId}).then(tab => tab.windowId)`);
     await evaluate(view, `const control = document.querySelector('#lyrics-offset');
@@ -554,7 +612,7 @@ try {
     assert.equal((await evaluate(sw, read)).status.session.id, capture.session.id);
     await evaluate(view, "document.querySelector('#stop').click()");
     await until(async () => (await evaluate(sw, read)).status?.phase, phase => phase === 'ready', 'Player capture stopped');
-    console.log('HTML5 playback, Media Session, timed captions, saved correction and live C/Am estimates passed.');
+    console.log('HTML5 playback, Karaoke synchronized lyric preview, timed captions, saved correction and live C/Am estimates passed.');
   }
   if (process.env.MOODSHIFT_CHORDS_TEST) {
     const songUrl = 'https://www.youtube.com/watch?v=PqJNc9KVIZE';
@@ -660,9 +718,9 @@ try {
     assert.equal(await highlighted(), secondLine);
     console.log('Live LRCLIB synchronized lyrics, title/artist, pause, seek, playback rate, offset and panel reopen passed.');
 
-    await evaluate(lyricsPanel, "Array.from(document.querySelectorAll('button')).find(button => button.textContent === 'Dreamy').click()");
+    await evaluate(lyricsPanel, "document.querySelector('#home-tab').click(); document.querySelector('[data-mood=cloud-nine]').click()");
     await until(async () => (await evaluate(sw, read)).status.effects?.reverbMix,
-      reverb => reverb === 0.33, 'Audio preset remains available');
+      reverb => reverb === 0.4, 'Audio preset remains available');
 
     if (process.env.MOODSHIFT_LYRICS_STEMS) {
       await startStemHelper(id);
@@ -724,7 +782,7 @@ try {
     const panel = await find(t => t.url === origin + '/sidepanel.html', 'stem panel');
     const panelView = await attach(panel.targetId);
     const click = async name => {
-      const button = `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)})`;
+      const button = `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)} || b.getAttribute('aria-label') === ${JSON.stringify(name)})`;
       await until(() => evaluate(panelView, `(${button})?.disabled === false`), Boolean, name + ' is available');
       await evaluate(panelView, `(${button}).click()`);
     };
@@ -821,7 +879,7 @@ try {
       await until(presetStatus, status => status === 'Preset saved.', 'Save active Instrumental');
       await click('Full mix');
       await until(stemState, stem => stem.mode === 'full', 'Full mix before restore');
-      await click('Reset');
+      await click('Reset effects');
       await until(() => evaluate(panelView, "!document.querySelector('#saved-preset-apply').disabled"),
         Boolean, 'Saved preset ready after reset');
       await evaluate(panelView, "document.querySelector('#saved-preset-apply').click()");
@@ -891,9 +949,9 @@ try {
     const before = await playhead();
     const panel = await find(t => t.url === origin + '/sidepanel.html', 'YouTube side panel');
     const controls = await attach(panel.targetId);
-    await evaluate(controls, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Dreamy').click()");
+    await evaluate(controls, "[...document.querySelectorAll('button')].find(b => b.dataset.mood === 'cloud-nine').click()");
     await wait(500);
-    assert.equal((await evaluate(sw, read)).status.effects.reverbMix, 0.33);
+    assert.equal((await evaluate(sw, read)).status.effects.reverbMix, 0.4);
     const windowId = await evaluate(sw, 'chrome.tabs.get(' + youtubeStatus.session.tabId + ').then(tab => tab.windowId)');
     await evaluate(sw, 'chrome.sidePanel.close({windowId:' + windowId + '})');
     await until(
@@ -906,7 +964,7 @@ try {
     const backgroundCapture = (await evaluate(sw, read)).status;
     assert.equal(backgroundCapture.session.id, youtubeStatus.session.id);
     assert.ok(backgroundCapture.features.rms > 0.001);
-    assert.equal(backgroundCapture.effects.reverbMix, 0.33);
+    assert.equal(backgroundCapture.effects.reverbMix, 0.4);
     await until(playhead, position => position > before + 0.75, 'Background YouTube playback did not advance');
     if (process.env.MOODSHIFT_WORKER_TEST) {
       await send('Target.detachFromTarget', { sessionId: sw });
@@ -920,7 +978,7 @@ try {
       const audio = await attach(offscreen.targetId);
       const restored = await evaluate(audio, "chrome.runtime.sendMessage({target:'worker',type:'GET_STATUS'})");
       assert.equal(restored.status.session.id, youtubeStatus.session.id);
-      assert.equal(restored.status.effects.reverbMix, 0.33);
+      assert.equal(restored.status.effects.reverbMix, 0.4);
       const restartedWorker = await find(t => t.type === 'service_worker' && t.url.startsWith(origin), 'restarted worker');
       assert.notEqual(restartedWorker.targetId, worker.targetId);
       sw = await attach(restartedWorker.targetId);
@@ -934,13 +992,13 @@ try {
     const reopenedStatus = (await evaluate(sw, read)).status;
     assert.equal(reopenedStatus.phase, 'capturing', JSON.stringify(reopenedStatus));
     assert.equal(reopenedStatus.session.id, youtubeStatus.session.id);
-    assert.equal(await evaluate(reopenedControls, "document.querySelector('#effect-reverbMix').value"), '0.33');
+    assert.equal(await evaluate(reopenedControls, "document.querySelector('#effect-reverbMix').value"), '0.4');
     await evaluate(reopenedControls, "document.querySelector('#stop').click()");
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.phase, 'ready');
     await until(playhead, position => position > before + 1.5, 'YouTube playback after Stop did not advance');
     await send('Target.closeTarget', { targetId: backgroundPage });
-    console.log('YouTube signal, Dreamy ACK, uninterrupted playhead, background capture, panel reopen and Stop passed.');
+    console.log('YouTube signal, Cloud Nine ACK, uninterrupted playhead, background capture, panel reopen and Stop passed.');
   }
   if (process.env.MOODSHIFT_PRESETS_TEST) {
     const lastPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'side panel before restart')).targetId);
@@ -979,8 +1037,8 @@ try {
     await until(() => evaluate(restartedPanel, "document.querySelector('#saved-preset-status').textContent"),
       status => status === 'Applied ✓ · Restart preset', 'Offline preset ACK');
     const saved = (await readStatus()).status;
-    assert.equal(saved.effects.reverbMix, 0.33);
-    assert.equal(saved.effects.trebleDb, -2);
+    assert.equal(saved.effects.reverbMix, 0.4);
+    assert.equal(saved.effects.trebleDb, -2.7);
     assert.equal(saved.monitor, 'original');
     assert.equal(saved.stem.mode, 'full');
     console.log('Saved preset persisted across Chrome restart and restored exact DSP settings and monitor offline.');

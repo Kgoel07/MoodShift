@@ -20,6 +20,8 @@ export function mountLyrics(root: HTMLElement, summary: HTMLElement,
   const search = root.querySelector<HTMLButtonElement>('#lyrics-submit')!;
   const status = root.querySelector<HTMLParagraphElement>('#lyrics-status')!;
   const viewport = root.querySelector<HTMLDivElement>('#lyrics-viewport')!;
+  const karaokeLyrics = document.querySelector<HTMLElement>('#karaoke-lyrics')!;
+  const homePanel = document.querySelector<HTMLElement>('#home-panel')!;
   const follow = root.querySelector<HTMLInputElement>('#lyrics-follow')!;
   const offset = root.querySelector<HTMLInputElement>('#lyrics-offset')!;
   const session = new LyricsSession();
@@ -39,6 +41,16 @@ export function mountLyrics(root: HTMLElement, summary: HTMLElement,
   let timing: AudioTiming | undefined;
   let captionFallback: string | undefined;
   let activeLookup: string | undefined;
+  let karaokePreview = false;
+
+  function placeLyrics(): void {
+    const preview = karaokePreview && !homePanel.hidden && lines.length > 0;
+    karaokeLyrics.hidden = !preview;
+    if (preview && viewport.parentElement !== karaokeLyrics) karaokeLyrics.append(viewport);
+    if (!preview && viewport.parentElement !== root) root.insertBefore(viewport, form);
+  }
+
+  new MutationObserver(placeLyrics).observe(homePanel, { attributes: true, attributeFilter: ['hidden'] });
 
   function refreshControls(): void {
     form.hidden = session.playback === null;
@@ -55,6 +67,7 @@ export function mountLyrics(root: HTMLElement, summary: HTMLElement,
     viewport.hidden = true;
     viewport.setAttribute('aria-label', 'Song lyrics');
     follow.disabled = true;
+    placeLyrics();
   }
 
   function requestCaptions(enabled: boolean): void {
@@ -126,6 +139,7 @@ export function mountLyrics(root: HTMLElement, summary: HTMLElement,
         viewport.replaceChildren(...lineElements);
         viewport.hidden = false;
         follow.disabled = false;
+        placeLyrics();
         highlight();
         break;
       case 'plain': {
@@ -328,6 +342,10 @@ export function mountLyrics(root: HTMLElement, summary: HTMLElement,
   });
 
   return {
+    setKaraokePreview(enabled: boolean): void {
+      karaokePreview = enabled;
+      placeLyrics();
+    },
     setTiming(next?: AudioTiming): void {
       if (timing?.seconds === next?.seconds) return;
       timing = next;

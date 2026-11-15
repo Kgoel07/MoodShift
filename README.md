@@ -9,9 +9,9 @@ MoodShift applies live EQ, filters, reverb, echo, and distortion to one selected
 3. Run `npm run dev:server` in one terminal. The proxy listens on `127.0.0.1:8787`. Visit [proxy health](http://127.0.0.1:8787/health) to check reachability and whether a key is configured. Account access and credits are verified by an actual prompt.
 4. Run `npm run build:extension`.
 5. In Chrome, open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and choose `extension/dist`. Pin MoodShift from Chrome’s Extensions menu for quick access.
-6. Play authorized audio on YouTube. Click the MoodShift icon **from the playing tab** and look for its title and signal in the side panel. Try **Dreamy**, then a prompt such as “Make it warmer and more dreamy.” Press Enter or click **Apply**. Shift+Enter adds a line break. Try **Original**, **Modified**, then **Stop processing**.
+6. Play authorized audio on YouTube. Click the MoodShift icon **from the playing tab** and look for its title and signal in the side panel. Try **Cloud Nine**, then a prompt such as “Make it warmer and more dreamy.” Press Enter or click **Apply**. Shift+Enter adds a line break. Try **Original**, **Modified**, then **Stop processing**.
 
-Open the panel from Chrome’s side panel menu to inspect the existing session. Use the toolbar icon on a different source tab to switch capture. **Reset** restores neutral values for the current session. Select **Modified** to hear the effects after comparing with Original.
+Open the panel from Chrome’s side panel menu to inspect the existing session. Use the toolbar icon on a different source tab to switch capture. **Advanced → Effect controls → Reset effects** restores neutral values for the current session. Select **Modified** to hear the effects after comparing with Original.
 
 ## Song identification, lyrics and page captions
 
@@ -39,6 +39,10 @@ On Spotify Web Player, YouTube Music, SoundCloud, and other captured players, op
 
 MoodShift sends the exact YouTube watch URL to Songle when you open **Chords**. It caches successful results locally for up to seven days and keeps up to 16 videos. Songle covers registered recordings. A missing recording has no progression, and an outage shows a retry control. The integration is for noncommercial use and the original video plays directly from YouTube. [Songle chord API](https://widget.songle.jp/docs/v1?lang=en) · [Songle Widget terms](https://widget.songle.jp/docs/terms-of-use) · [Songle terms](https://api.songle.jp/terms_of_use.pdf)
 
+## Mood Scenes
+
+Choose a Mood Scene from **Choose Your Mood** on Home to apply its sound immediately. **Karaoke Night** requests Instrumental and shows synchronized lyrics on Home when a match is available. If Instrumental is unavailable, you can still sing along with the current mix. Select another scene to return to Full Mix. You can customize any scene with a prompt or the effect controls and save it under **My Presets**.
+
 ## My Presets
 
 1. Capture a playing tab and adjust effects, the stem mode, and Original or Modified. Open **My Presets**, enter a name and an optional description, and click **Save Preset**.
@@ -49,7 +53,7 @@ Saved presets are shared across songs in the same Chrome profile. They use local
 
 ## Side panel and sound preferences
 
-**Home** contains the prompt, quick presets, My Presets, Original/Modified, and stem choices. **Advanced** contains the effect sliders, lyrics, chord diagrams, and personalization. Presets and the stem controls are available in both tabs. Select a tab with the mouse or with the Left and Right arrow keys when the tab has focus. MoodShift remembers the last selected tab in the same Chrome profile.
+**Home** contains the prompt, Mood Scenes, My Presets, Original/Modified, and stem choices. **Advanced** contains the effect sliders, lyrics, chord diagrams, and personalization. Presets and the stem controls are available in both tabs. Select a tab with the mouse or with the Left and Right arrow keys when the tab has focus. MoodShift remembers the last selected tab in the same Chrome profile.
 
 In **Advanced → Personalization**, enter a short sound preference such as “I prefer warm bass and minimal distortion” and choose **Save locally**. Each entry has Edit and Delete controls. During capture, “Remember that I prefer warm bass” in the main prompt also saves locally. Local preferences and saved presets use separate Chrome storage and persist across restarts. Local preferences support up to 30 entries of 240 characters each.
 
@@ -113,7 +117,7 @@ Run the Python transport tests with `& $python -m unittest discover -s tests -p 
 Use authorized audio. A Creative Commons option is Kevin MacLeod’s “Carefree.” [YouTube track](https://www.youtube.com/watch?v=rZWLwz9_7o0) · [Track license](https://incompetech.com/music/royalty-free/index.html?gt=&isrc=USUAN1400037)
 
 1. From the playing YouTube tab, click MoodShift. Confirm the panel opens, the right title appears, and the audio continues at normal level with no duplicate output.
-2. With no key, click **Dreamy**. Verify audible reverb/EQ in under half a second while playback advances.
+2. With no key, click **Cloud Nine**. Verify audible reverb/EQ in under half a second while playback advances.
 3. Change tabs or applications, close and reopen the side panel, and confirm sound and settings persist. Try minimizing Chrome. Clicking the toolbar icon on the same tab should preserve the session. Clicking it on another playing tab should switch cleanly.
 4. With a valid Gemini API key, enter “Make it warmer and more dreamy.” Confirm interpretation, application acknowledgment, and an audible effect change while playback advances.
 5. Enter “A little more bass, keep the reverb.” Verify bass increases when there is headroom, reverb stays fixed, and unrelated values stay fixed.

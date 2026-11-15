@@ -39,7 +39,7 @@
       <div id="home-presets">
         <div id="preset-library">
           <section class="preset-section" aria-labelledby="preset-label">
-            <h2 id="preset-label">Presets</h2>
+            <h2 id="preset-label">Choose Your Mood</h2>
             <div id="presets"></div>
           </section>
           <details id="saved-presets">
@@ -64,6 +64,9 @@
           </details>
         </div>
       </div>
+      <section id="karaoke-lyrics" aria-labelledby="karaoke-lyrics-title" hidden>
+        <h2 id="karaoke-lyrics-title">Sing along</h2>
+      </section>
       <div id="monitor" role="group" aria-label="Audio monitor">
         <button type="button" data-mode="original" aria-pressed="false">Original</button>
         <button type="button" data-mode="modified" aria-pressed="true">Modified</button>
@@ -85,6 +88,7 @@
       <details id="effect-settings" open>
         <summary>Effect controls</summary>
         <fieldset id="controls" aria-label="Effect settings" disabled></fieldset>
+        <button id="reset-effects" type="button" disabled>Reset effects</button>
       </details>
       <details id="advanced-presets">
         <summary>Presets</summary>

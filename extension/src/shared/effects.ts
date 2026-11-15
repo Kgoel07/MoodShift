@@ -44,11 +44,3 @@ export function clampEffects(input: unknown): AudioEffectState {
   if (Object.keys(patch).length !== effectKeys.length) throw new Error('Expected all effect parameters.');
   return applyPatch(neutralEffects, patch);
 }
-
-export const presets = {
-  Dreamy: Object.freeze({ ...neutralEffects, reverbMix: 0.33, trebleDb: -2 }),
-  Warm: Object.freeze({ ...neutralEffects, bassDb: 2, trebleDb: -3 }),
-  Underwater: Object.freeze({ ...neutralEffects, lowpassHz: 1000 }),
-  'Bass Boost': Object.freeze({ ...neutralEffects, bassDb: 5 }),
-  'Clear Voice': Object.freeze({ ...neutralEffects, highpassHz: 100, bassDb: -2, trebleDb: 2 }),
-} satisfies Record<string, Readonly<AudioEffectState>>;
