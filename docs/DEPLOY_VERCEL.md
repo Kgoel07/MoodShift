@@ -8,10 +8,11 @@ The repository root is the Vercel project. Its Express entry point exports the a
 
    ```powershell
    npm ci
-   $env:API_BASE_URL = 'https://api.example.com'
-   $env:STEM_WS_URL = 'wss://stems.example.com/stem'
+   Copy-Item extension/.env.example extension/.env.local
    npm run build:extension -- --mode production
    ```
+
+   Edit `extension/.env.local` to set the public endpoints. The production extension build uses values from this file first and uses terminal variables for keys absent from the file. The build prints the API URL it used. Store Vercel secrets in Vercel.
 
 2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select `extension/dist-cloud`. Copy its 32-character **ID**. An unpacked install from another path can have a different ID. Allow only the IDs used by your demo.
 3. Generate a random demo code on your own machine and keep it in a password manager. One way to generate 32 random bytes in URL-safe format is `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`. Use a new code for the demo and keep it out of shell arguments, source files, and build variables. Use the same code in the AWS worker if one extension will access both services.
@@ -34,7 +35,7 @@ The repository root is the Vercel project. Its Express entry point exports the a
 2. On the import screen, leave **Root Directory** at the repository root (`./`). Use the **Express** preset and default Express build settings. The extension shares TypeScript validation with the server, so selecting `server/` would hide those imports.
 3. Enter the environment variables above in **Environment Variables** for **Production**. Enable them for **Preview** only when you intend to test that branch with its own credentials. If import initially tracks `main`, set the dedicated project’s production branch to `feature/cloud-deployment` in **Settings → Environments → Production → Branch Tracking** and deploy that branch. The CLI below can also deploy the current branch directly to Production.
 4. Deploy the production revision. Copy the HTTPS production domain from **Domains** and open `https://<project>.vercel.app/health`. Expect HTTP 200 with `ok: true`, the model name, and `aiConfigured: true` when a Gemini key is present. Health checks key presence. Use the [smoke test](CLOUD_SMOKE_TEST.md) to verify actual model access.
-5. Update `API_BASE_URL` to the real production origin and `STEM_WS_URL` to the AWS WSS address. Rebuild the same `extension/dist-cloud` directory and reload it in Chrome. Open **Private demo access**, enter the code, and click **Save demo code**.
+5. In `extension/.env.local`, set `API_BASE_URL` to the production domain listed under **Domains**. Verify its `/health` returns JSON without a Vercel login. Set `STEM_WS_URL` to the AWS WSS address, or use `ws://127.0.0.1:8788` for the local stem helper. Start the local helper with the extension ID shown for `extension/dist-cloud` in `chrome://extensions`. Rebuild with `npm run build:extension -- --mode production` and reload `extension/dist-cloud` in Chrome. Open **Private demo access**, enter the code, and click **Save demo code**.
 
 ## Deploy using the CLI
 

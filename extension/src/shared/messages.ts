@@ -21,6 +21,8 @@ export type AudioCommand =
   | StemChange;
 
 export type WorkerMessage = WorkerCommand & { target: 'worker' };
+export type StemCodeRequest = { target: 'worker'; type: 'GET_STEM_CODE' };
+export type StemCodeReply = { ok: true; code: string } | { ok: false; message: string };
 export type AudioMessage = AudioCommand & { target: 'audio' };
 export type StatusChanged = { target: 'panel'; type: 'STATUS_CHANGED' };
 export type MeterUpdate = { sessionId: string; features: AudioFeatures };

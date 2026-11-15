@@ -7,8 +7,8 @@ import { mountPersonalization } from './personalization-panel';
 import { explicitPreference } from './shared/preferences';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
 import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
-import { deployment, demoCodePattern } from './shared/deployment';
-import { apiRequest, demoCodeKey } from './api-client';
+import { deployment, demoCodePattern, usesCloudStems } from './shared/deployment';
+import { apiErrorDetail, apiRequest, demoCodeKey } from './api-client';
 
 const statusLabel = document.querySelector<HTMLParagraphElement>('#status')!;
 const chords = mountChords(document.querySelector<HTMLElement>('#chords')!);
@@ -44,7 +44,7 @@ const personalization = mountPersonalization(document.querySelector<HTMLElement>
 
 if (deployment.mode === 'production') {
   document.querySelector<HTMLElement>('#cloud-settings')!.hidden = false;
-  document.querySelector<HTMLElement>('#cloud-stem-note')!.hidden = false;
+  document.querySelector<HTMLElement>('#cloud-stem-note')!.hidden = !usesCloudStems();
   const settings = document.querySelector<HTMLFormElement>('#cloud-code-form')!;
   const field = document.querySelector<HTMLInputElement>('#cloud-code')!;
   const result = document.querySelector<HTMLElement>('#cloud-code-status')!;
@@ -357,14 +357,14 @@ form.addEventListener('submit', async event => {
         audioFeatures: session.muted || outputPaused ? silentFeatures : features,
         personalization: personalization.context(),
     }, request.controller.signal);
-    const body = await response.json();
-    if (interpretation?.id !== request.id) return;
     if (!response.ok) {
-      const detail = typeof body?.error === 'string' ? body.error.slice(0, 240) : 'Check the local proxy.';
+      const detail = await apiErrorDetail(response);
       if (response.status === 504) throw new Error('Gemini timed out. Try again.');
       if (response.status >= 500 || response.status === 429) throw new GeminiUnavailable(detail);
       throw new Error(detail);
     }
+    const body = await response.json();
+    if (interpretation?.id !== request.id) return;
     const result = parseInterpretation(body, effects);
     const detail = [result.summary, result.unsupported.length ? `Unsupported · ${result.unsupported.join(', ')}` : '']
       .filter(Boolean).join(' ');

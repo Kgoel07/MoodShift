@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { apiRequest, demoCodeKey, stemStartMessage } from '../extension/src/api-client';
-import { deploymentFromEnv } from '../extension/src/shared/deployment';
+import { apiErrorDetail, apiRequest, demoCodeKey, stemStartMessage } from '../extension/src/api-client';
+import { deploymentFromEnv, usesCloudStems } from '../extension/src/shared/deployment';
 
 const env = { API_BASE_URL: 'https://moodshift.example.com', STEM_WS_URL: 'wss://stems.example.com/stem' };
 const local = deploymentFromEnv('development', {});
 const cloud = deploymentFromEnv('production', env);
+const hybrid = deploymentFromEnv('production', { ...env, STEM_WS_URL: local.stemWsUrl });
 const code = 'test-code-' + 'z'.repeat(32);
 
 afterEach(() => vi.unstubAllGlobals());
@@ -40,7 +41,7 @@ describe('extension deployment settings', () => {
     await apiRequest('/api/interpret', {}, signal, local);
     expect(read).not.toHaveBeenCalled();
     expect(fetcher.mock.calls[0][1].headers.Authorization).toBeUndefined();
-    await apiRequest('/api/memory', {}, signal, cloud);
+    await apiRequest('/api/memory', {}, signal, hybrid);
     expect(fetcher.mock.calls[1]).toEqual(['https://moodshift.example.com/api/memory',
       expect.objectContaining({ headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + code }, redirect: 'error' })]);
     await expect(apiRequest('/api/memory', {}, signal, { ...cloud, apiBaseUrl: local.apiBaseUrl })).rejects.toThrow('HTTPS');
@@ -51,8 +52,27 @@ describe('extension deployment settings', () => {
 
   it('keeps the legacy start message and only includes a valid cloud code on WSS', () => {
     expect(stemStartMessage(48000, 'abc', local, code)).toEqual({ type: 'start', sampleRate: 48000, sessionId: 'abc' });
+    expect(stemStartMessage(48000, 'abc', hybrid, code)).toEqual({ type: 'start', sampleRate: 48000, sessionId: 'abc' });
     expect(stemStartMessage(48000, 'abc', cloud, code)).toMatchObject({ token: code });
     expect(() => stemStartMessage(48000, 'abc', cloud)).toThrow();
-    expect(() => stemStartMessage(48000, 'abc', { ...cloud, stemWsUrl: local.stemWsUrl }, code)).toThrow();
+    expect(() => stemStartMessage(48000, 'abc', { ...cloud, stemWsUrl: 'ws://stems.example.com' }, code)).toThrow();
+  });
+
+  it('allows the fixed loopback stem helper alongside a production HTTPS API', () => {
+    expect(hybrid).toMatchObject({ apiBaseUrl: env.API_BASE_URL, stemWsUrl: local.stemWsUrl });
+    expect(usesCloudStems(hybrid)).toBe(false);
+    expect(usesCloudStems(cloud)).toBe(true);
+    for (const stemUrl of ['ws://127.0.0.1:8789', 'ws://localhost:8788', 'ws://127.0.0.1:8788/stem']) {
+      expect(() => deploymentFromEnv('production', { ...env, STEM_WS_URL: stemUrl })).toThrow('STEM_WS_URL');
+    }
+  });
+
+  it('distinguishes Vercel deployment protection from a MoodShift access-code error', async () => {
+    const protectedReply = Response.json({ protection: {}, error: { code: '401' } }, { status: 401 });
+    expect(await apiErrorDetail(protectedReply, cloud)).toMatch(/Vercel Deployment Protection.*production domain/);
+    const demoReply = Response.json({ error: 'Enter the private demo access code.' }, { status: 401 });
+    expect(await apiErrorDetail(demoReply, cloud)).toBe('Enter the private demo access code.');
+    expect(await apiErrorDetail(new Response('<html>', { status: 502 }), cloud)).toMatch(/Cloud API returned HTTP 502/);
+    expect(await apiErrorDetail(new Response('<html>', { status: 502 }), local)).toMatch(/Check the local proxy/);
   });
 });

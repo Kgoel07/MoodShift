@@ -1,4 +1,4 @@
-import { demoCodePattern, deployment, type DeploymentConfig } from './shared/deployment';
+import { demoCodePattern, deployment, localStemWsUrl, usesCloudStems, type DeploymentConfig } from './shared/deployment';
 
 export const demoCodeKey = 'moodshiftDemoAccessCode';
 
@@ -23,12 +23,23 @@ export async function apiRequest(path: '/api/interpret' | '/api/memory', body: u
   });
 }
 
+export async function apiErrorDetail(response: Response, config = deployment): Promise<string> {
+  const body = await response.json().catch(() => undefined);
+  if (typeof body?.error === 'string') return body.error.slice(0, 240);
+  if (config.mode === 'development') return `Check the local proxy (HTTP ${response.status}).`;
+  if (response.status === 401 && body?.protection != null) {
+    return 'Vercel Deployment Protection blocked the request. Use the production domain where /health works without a Vercel login.';
+  }
+  return `Cloud API returned HTTP ${response.status}. Check /health on the configured production domain.`;
+}
+
 export function stemStartMessage(sampleRate: number, sessionId: string, config: DeploymentConfig, code?: string) {
-  if (config.mode === 'production') {
-    if (new URL(config.stemWsUrl).protocol !== 'wss:' || !code || !demoCodePattern.test(code)) {
-      throw new Error('Cloud stems require WSS and a private demo code.');
-    }
+  if (usesCloudStems(config)) {
+    if (!code || !demoCodePattern.test(code)) throw new Error('Cloud stems require a private demo code.');
     return { type: 'start', sampleRate, sessionId, token: code };
+  }
+  if (config.mode === 'production' && config.stemWsUrl !== localStemWsUrl) {
+    throw new Error('Cloud stems require WSS.');
   }
   return { type: 'start', sampleRate, sessionId };
 }

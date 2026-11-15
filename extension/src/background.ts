@@ -1,5 +1,7 @@
-import { statusChanged, toAudio, type Reply, type WorkerMessage } from './shared/messages';
+import { statusChanged, toAudio, type Reply, type StemCodeReply, type StemCodeRequest, type WorkerMessage } from './shared/messages';
 import type { CaptureStatus, SourceTab } from './shared/types';
+import { usesCloudStems } from './shared/deployment';
+import { cloudDemoCode } from './api-client';
 import { installLyricsLookup } from './lyrics-provider';
 import { installChordLookup } from './chords-provider';
 
@@ -137,10 +139,21 @@ chrome.tabCapture.onStatusChanged.addListener(({ status: captureState, tabId }) 
   }).catch(console.error);
 });
 
-chrome.runtime.onMessage.addListener((message: WorkerMessage | {
+chrome.runtime.onMessage.addListener((message: WorkerMessage | StemCodeRequest | {
   target: 'worker'; type: 'AUDIO_ENDED'; sessionId: string;
 }, sender, sendResponse) => {
   if (message.target !== 'worker') return;
+  if (message.type === 'GET_STEM_CODE') {
+    if (!usesCloudStems() || sender.id !== chrome.runtime.id || sender.url !== offscreenUrl) {
+      sendResponse({ ok: false, message: 'Cloud stem authentication is unavailable.' } satisfies StemCodeReply);
+      return;
+    }
+    void cloudDemoCode().then(
+      code => sendResponse(code ? { ok: true, code } : { ok: false, message: 'Cloud stem authentication is unavailable.' }),
+      error => sendResponse({ ok: false, message: error instanceof Error ? error.message : 'Could not read the private demo code.' } satisfies StemCodeReply),
+    );
+    return true;
+  }
   if (message.type === 'AUDIO_ENDED') {
     if (sender.url === offscreenUrl) void queue(async () => remember(await audioStatus())).catch(console.error);
     return;

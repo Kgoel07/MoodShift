@@ -1,5 +1,5 @@
 import { stemHeaderBytes, stereoFrameBytes, type PCMMessage, type StemWorkerStart } from './shared/stem-pcm';
-import { deployment } from './shared/deployment';
+import { deployment, usesCloudStems } from './shared/deployment';
 import { stemStartMessage } from './api-client';
 
 self.onmessage = ({ data }: MessageEvent<StemWorkerStart>) => {
@@ -21,7 +21,7 @@ self.onmessage = ({ data }: MessageEvent<StemWorkerStart>) => {
   }
 
   socket.onopen = () => socket.send(JSON.stringify(hello));
-  socket.onerror = () => fail(deployment.mode === 'development' ? 'Start the local stem helper for this extension.' : 'Could not connect to the cloud stem worker.');
+  socket.onerror = () => fail(usesCloudStems() ? 'Could not connect to the cloud stem worker.' : 'Start the local stem helper for this extension.');
   socket.onclose = event => fail(event.reason || 'Stem helper disconnected.');
   socket.onmessage = ({ data: response }: MessageEvent<string | ArrayBuffer>) => {
     if (typeof response === 'string' && !ready) {

@@ -1,4 +1,5 @@
 export const demoCodePattern = /^[A-Za-z0-9_-]{32,128}$/;
+export const localStemWsUrl = 'ws://127.0.0.1:8788';
 export type DeploymentConfig = {
   mode: 'development' | 'production';
   apiBaseUrl: string;
@@ -29,8 +30,9 @@ export function deploymentFromEnv(mode: string, env: Record<string, string | und
   const local = mode === 'development';
   const api = endpoint(env.API_BASE_URL ?? (local ? 'http://127.0.0.1:8787' : ''),
     'API_BASE_URL', local ? 'http:' : 'https:', local, false);
-  const stems = endpoint(env.STEM_WS_URL ?? (local ? 'ws://127.0.0.1:8788' : ''),
-    'STEM_WS_URL', local ? 'ws:' : 'wss:', local, true);
+  const stemUrl = env.STEM_WS_URL ?? (local ? localStemWsUrl : '');
+  const localStem = local || stemUrl === localStemWsUrl || stemUrl === localStemWsUrl + '/';
+  const stems = endpoint(stemUrl, 'STEM_WS_URL', localStem ? 'ws:' : 'wss:', localStem, true);
   const delay = env.STEM_DELAY_SECONDS === undefined ? (local ? 2.8 : 4.5) : Number(env.STEM_DELAY_SECONDS);
   if (!Number.isFinite(delay) || delay < 2.8 || delay > 8 || Math.round(delay * 10) / 10 !== delay) {
     throw new Error('STEM_DELAY_SECONDS must be 2.8 to 8.0 seconds in tenths.');
@@ -44,3 +46,7 @@ export function deploymentFromEnv(mode: string, env: Record<string, string | und
 declare const __MOODSHIFT_DEPLOYMENT__: DeploymentConfig;
 export const deployment = typeof __MOODSHIFT_DEPLOYMENT__ === 'undefined'
   ? deploymentFromEnv('development', {}) : __MOODSHIFT_DEPLOYMENT__;
+
+export function usesCloudStems(config = deployment): boolean {
+  return config.stemWsUrl.startsWith('wss://');
+}

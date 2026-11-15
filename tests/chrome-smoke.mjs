@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { rm, mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
+import { parse } from 'dotenv';
 
 const testDir = resolve('.moodshift-test');
 await mkdir(testDir, { recursive: true });
@@ -11,10 +12,12 @@ const profile = await mkdtemp(resolve(testDir, 'profile-'));
 const stemTest = Boolean(process.env.MOODSHIFT_STEM_TEST);
 const stemYouTube = Boolean(process.env.MOODSHIFT_STEM_YOUTUBE);
 const stemPort = process.env.MOODSHIFT_STEM_TEST_PORT;
-const cloudBuild = process.env.MOODSHIFT_CLOUD_BUILD_TEST === '1';
+const localStemsWithCloudApi = process.env.MOODSHIFT_CLOUD_BUILD_TEST === 'loopback';
+const cloudBuild = process.env.MOODSHIFT_CLOUD_BUILD_TEST === '1' || localStemsWithCloudApi;
 const smokeCode = 'cloud-smoke-placeholder-' + 'x'.repeat(32);
-let extensionPath = resolve('extension/dist');
-if (stemPort || cloudBuild) {
+const cloudConfig = cloudBuild ? parse(await readFile(localStemsWithCloudApi ? 'extension/.env.local' : 'extension/.env.example')) : {};
+let extensionPath = resolve(localStemsWithCloudApi ? 'extension/dist-cloud' : 'extension/dist');
+if (stemPort || (cloudBuild && !localStemsWithCloudApi)) {
   if (stemPort) {
     assert.match(stemPort, /^[1-9][0-9]{3,4}$/);
     assert.ok(!cloudBuild && Number(stemPort) <= 65535 && !['8787', '8788'].includes(stemPort));
@@ -23,7 +26,8 @@ if (stemPort || cloudBuild) {
   const env = { ...process.env, STEM_WS_URL: stemPort ? 'ws://127.0.0.1:' + stemPort : 'wss://stems.example.com/stem',
     API_BASE_URL: cloudBuild ? 'https://api.example.com' : 'http://127.0.0.1:8787' };
   execFileSync(process.execPath, ['--import', 'tsx', 'scripts/build-extension.mjs',
-    '--mode', cloudBuild ? 'production' : 'development', '--outdir', isolatedPath], { stdio: 'inherit', env });
+    '--mode', cloudBuild ? 'production' : 'development', '--outdir', isolatedPath,
+    ...(cloudBuild ? ['--env-file', 'extension/.env.example'] : [])], { stdio: 'inherit', env });
   extensionPath = isolatedPath;
 }
 const stemFixture = stemTest && !stemYouTube ? await readFile('.stem-gate/assets/fixture.ogg') : undefined;
@@ -191,14 +195,26 @@ try {
     const view = await attach(panel.targetId);
     if (cloudBuild) {
       const manifest = await evaluate(view, 'chrome.runtime.getManifest()');
-      assert.ok(manifest.host_permissions.includes('https://api.example.com/*'));
-      assert.ok(manifest.host_permissions.includes('wss://stems.example.com/*'));
-      assert.ok(!manifest.host_permissions.some(pattern => pattern.includes('127.0.0.1')));
+      const stemOrigin = new URL(cloudConfig.STEM_WS_URL).origin;
+      assert.ok(manifest.host_permissions.includes(new URL(cloudConfig.API_BASE_URL).origin + '/*'));
+      assert.ok(manifest.host_permissions.includes(stemOrigin + '/*'));
+      assert.equal(stemOrigin === 'ws://127.0.0.1:8788', localStemsWithCloudApi);
+      assert.equal(await evaluate(view, "document.querySelector('#cloud-stem-note').hidden"), localStemsWithCloudApi);
+      assert.ok(!manifest.host_permissions.includes('http://127.0.0.1/*'));
       await evaluate(view, `document.querySelector('#cloud-settings').open = true;
         document.querySelector('#cloud-code').value = ${JSON.stringify(smokeCode)};
         document.querySelector('#cloud-code-form').requestSubmit()`);
       await until(() => evaluate(view, "document.querySelector('#cloud-code-status').textContent"),
         status => status === 'Private demo code saved.', 'Code saved through production UI');
+      const offscreen = await find(t => t.url === origin + '/offscreen.html', 'offscreen document');
+      const audio = await attach(offscreen.targetId);
+      assert.equal(await evaluate(audio, 'typeof chrome.storage'), 'undefined');
+      const requestCode = "chrome.runtime.sendMessage({target:'worker',type:'GET_STEM_CODE'})";
+      assert.equal((await evaluate(view, requestCode)).ok, false);
+      const stemCode = await evaluate(audio, requestCode);
+      assert.equal(stemCode.ok, !localStemsWithCloudApi);
+      if (!localStemsWithCloudApi) assert.equal(stemCode.code, smokeCode);
+      console.log(localStemsWithCloudApi ? `Loopback stem build loaded as extension ${id}.` : 'Offscreen cloud authentication passed through the service worker.');
     }
     const click = name => evaluate(view, `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)}).click()`);
     await click('Dreamy');
@@ -236,7 +252,7 @@ try {
         await submit();
         await until(getFeedback, text => text.includes('Unsupported'), 'Production API request completed');
         assert.deepEqual(await evaluate(view, 'window.cloudRequest'),
-          { url: 'https://api.example.com/api/interpret', authorization: 'Bearer ' + smokeCode, redirect: 'error' });
+          { url: new URL('/api/interpret', cloudConfig.API_BASE_URL).href, authorization: 'Bearer ' + smokeCode, redirect: 'error' });
         console.log('Production extension loaded with exact host permissions and sent demo authentication only to its configured HTTPS API.');
       }
       await evaluate(view, "window.unmockedFetch = window.fetch.bind(window); window.fetch = () => Promise.reject(new TypeError('Simulated proxy outage'));");
@@ -552,11 +568,12 @@ try {
       await until(() => evaluate(panelView, "!document.querySelector('#apply').disabled"), Boolean, 'Prompt can submit');
       await evaluate(panelView, "document.querySelector('#interpret').requestSubmit()");
     };
-    await click('Instrumental');
-    await until(stemState, stem => stem.phase === 'unavailable', 'Missing-helper fallback');
-    assert.doesNotMatch(await feedback(), /Applied/);
-
-    await startStemHelper(id);
+    if (!localStemsWithCloudApi) {
+      await click('Instrumental');
+      await until(stemState, stem => stem.phase === 'unavailable', 'Missing-helper fallback');
+      assert.doesNotMatch(await feedback(), /Applied/);
+      await startStemHelper(id);
+    }
     const offscreen = await find(t => t.url === origin + '/offscreen.html', 'stem audio document');
     const audio = await attach(offscreen.targetId);
     await evaluate(audio, `(() => {
@@ -655,14 +672,17 @@ try {
       state => state.phase === 'capturing' && state.session.tabId === capture.session.tabId, 'Recapture stem source');
     await click('Vocals');
     await until(stemState, stem => stem.phase === 'active' && stem.mode === 'vocals', 'Reconnected helper after tab switch');
-    await stopStemHelper();
-    await until(stemState, stem => stem.phase === 'unavailable', 'Helper-disconnect fallback');
-    const recovered = (await evaluate(sw, read)).status;
-    assert.equal(recovered.session.id, resumedCapture.session.id);
-    assert.equal(recovered.stem.mode, 'full');
+    if (!localStemsWithCloudApi) {
+      await stopStemHelper();
+      await until(stemState, stem => stem.phase === 'unavailable', 'Helper-disconnect fallback');
+      const recovered = (await evaluate(sw, read)).status;
+      assert.equal(recovered.session.id, resumedCapture.session.id);
+      assert.equal(recovered.stem.mode, 'full');
+      console.log('Helper-disconnect fallback passed.');
+    }
     await click('Stop processing');
     await until(async () => (await evaluate(sw, read)).status, status => status.phase === 'ready', 'Stop after stem capture');
-    console.log('Real helper and stem PCM, prompts, A/B, pause/resume, tab switch, reconnection, helper-disconnect fallback and Stop passed.');
+    console.log('Real helper and stem PCM, prompts, A/B, pause/resume, tab switch, reconnection and Stop passed.');
   }
   if (process.env.MOODSHIFT_YOUTUBE_TEST) {
     const youtube = 'https://www.youtube.com/watch?v=rZWLwz9_7o0';

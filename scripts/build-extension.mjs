@@ -1,12 +1,22 @@
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { parse } from 'dotenv';
 import { build } from 'esbuild';
 import { deploymentFromEnv } from '../extension/src/shared/deployment.ts';
 
 const dir = new URL('../extension/', import.meta.url);
-const { values } = parseArgs({ options: { mode: { type: 'string', default: 'development' }, outdir: { type: 'string' } } });
-const config = deploymentFromEnv(values.mode, process.env);
+const { values } = parseArgs({
+  options: { mode: { type: 'string', default: 'development' }, outdir: { type: 'string' }, 'env-file': { type: 'string' } },
+});
+const envFile = values['env-file'] ?? new URL('.env.local', dir);
+const fileEnv = values.mode === 'production'
+  ? parse(await readFile(envFile, 'utf8').catch(error => {
+      if (values['env-file'] !== undefined || error.code !== 'ENOENT') throw error;
+      return '';
+    }))
+  : {};
+const config = deploymentFromEnv(values.mode, { ...process.env, ...fileEnv });
 const outdir = resolve(values.outdir ?? (config.mode === 'production' ? 'extension/dist-cloud' : 'extension/dist'));
 const workspacePath = relative(process.cwd(), outdir);
 if (!workspacePath || workspacePath.startsWith('..') || isAbsolute(workspacePath)) {
@@ -41,3 +51,4 @@ await Promise.all([
   ...['offscreen.html', 'sidepanel.html', 'sidepanel.css'].map(name =>
     copyFile(new URL(`src/${name}`, dir), resolve(outdir, name))),
 ]);
+if (config.mode === 'production') console.log(`MoodShift cloud API: ${config.apiBaseUrl}`);

@@ -1,5 +1,5 @@
 import { installationIdPattern, preferenceLimit } from './shared/preferences';
-import { apiRequest } from './api-client';
+import { apiErrorDetail, apiRequest } from './api-client';
 import { deployment } from './shared/deployment';
 
 const storageKey = 'moodshiftPersonalization';
@@ -89,11 +89,8 @@ export function mountPersonalization(root: HTMLElement, onChange: () => void) {
     const latest = await updateSettings();
     if (action.action === 'remember' && !latest.enabled) throw new Error('Enable personalization to remember a preference.');
     const response = await apiRequest('/api/memory', { ...action, installationId: latest.installationId }, AbortSignal.timeout(6500));
-    const result = await response.json();
-    if (!response.ok) {
-      throw new Error(typeof result?.error === 'string' ? result.error.slice(0, 240) : 'Supermemory could not complete the request.');
-    }
-    return result;
+    if (!response.ok) throw new Error(await apiErrorDetail(response));
+    return response.json();
   }
 
   function remember(preference: string): Promise<string> {
