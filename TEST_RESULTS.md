@@ -67,3 +67,20 @@ The longer YouTube attempt kept the stem session active for two minutes but fail
 | In-tab YouTube navigation | PASS (automated) | A related video replaced the lyrics metadata in the same document and capture session. A pre-roll exposed a timing edge case during development. MoodShift now displays the incoming song’s identity and waits for its playback clock before looking up lyrics. |
 | Audio coexistence | PASS (automated) | The local tone regression passed. Dreamy and the real DirectML Instrumental stem both worked on the YouTube capture with lyrics visible. |
 | Human listening and manual offset calibration | NOT RUN | The Chrome smoke test checked displayed state and active audio routing programmatically. |
+
+## Chords, My Presets, and personalization
+
+November 14, 2026 · Windows · Node.js 22.20.0 · Chrome 157.0.8103.52
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| `npm run typecheck`, `npm run build:extension`, `npm test` | PASS (automated) | The final build passed type checking. All 93 Vitest tests passed, including 19 new tests and all 74 existing tests. |
+| Python stem transport | PASS (automated) | All four existing `test_stem_*.py` tests passed. |
+| Songle live in Chrome | PASS (automated) | Songle’s documented recording returned a real timeline. Chrome verified Eb → Eb/Ab, forward and backward seeks, pause, rate and shared offset, the guitar and piano diagrams, local cache storage, and Stop. [YouTube recording](https://www.youtube.com/watch?v=PqJNc9KVIZE) · [Songle API](https://widget.songle.jp/docs/v1?lang=en) |
+| Chord provider error and stale-state handling | PASS (automated) | 404, malformed and empty data, provider errors, ads, timed gaps, and an old response after a video change were exercised with mocks. |
+| Saved presets in Chrome | PASS (automated) | A saved preset survived a full Chrome restart and restored Dreamy’s exact reverb and treble, plus Original mode, on a different tab with fetch blocked. A separate real YouTube test saved and restored DSP settings and an active Instrumental stem. Unit tests exercised rename, update, deletion, invalid data, overlapping saves, and a missing stem helper. |
+| YouTube audio, lyrics and live stems | PASS (automated) | YouTube capture, LRCLIB seek/rate/offset sync, active Instrumental alongside lyrics, panel reopen, in-tab navigation, and service-worker suspension with session recovery passed. Both DirectML outputs reached the Chrome worklet on the licensed track. Prompt effects, A/B, pause/resume, tab switch, helper loss and Stop passed. The Chrome tests used disposable bundles and separate helper ports because another session already held port 8788. |
+| Live Gemini and personalization fallback | PASS (automated) | `GET /health` returned HTTP 200. The live proxy returned a +2 dB bass patch and left reverb unchanged with Supermemory unconfigured. Live Gemini applied Instrumental and added reverb on the captured YouTube tab. With a synthetic preference for strong bass, “Remove all bass” returned a −12 dB patch. |
+| Supermemory v5 SDK and Chrome controls | PASS (automated) | SDK calls used mock HTTP responses and verified the namespace, opt-in lookup, distinct scope, write and view, remote deletion acknowledgment, no-key fallback, upstream errors and timeouts. Chrome exercised opt-in/out, both explicit save paths, view and clear. The running proxy returned an actionable HTTP 503 for memory without a key. |
+| Real Supermemory add, profile, and delete | NOT RUN | No `SUPERMEMORY_API_KEY` was available. |
+| Human listening, diagram usability, and timing by ear | NOT RUN | Run the Chrome and stem listening checklists in [README.md](README.md). macOS stems and CPU-only live stems retain the hardware limitations recorded above. |

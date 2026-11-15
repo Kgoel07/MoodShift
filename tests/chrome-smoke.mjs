@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { rm, mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { cp, rm, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 
@@ -10,6 +10,19 @@ await mkdir(testDir, { recursive: true });
 const profile = await mkdtemp(resolve(testDir, 'profile-'));
 const stemTest = Boolean(process.env.MOODSHIFT_STEM_TEST);
 const stemYouTube = Boolean(process.env.MOODSHIFT_STEM_YOUTUBE);
+const stemPort = process.env.MOODSHIFT_STEM_TEST_PORT;
+let extensionPath = resolve('extension/dist');
+if (stemPort) {
+  assert.match(stemPort, /^[1-9][0-9]{3,4}$/);
+  assert.ok(Number(stemPort) <= 65535 && !['8787', '8788'].includes(stemPort));
+  const isolatedPath = resolve(profile, 'isolated-extension');
+  await cp(extensionPath, isolatedPath, { recursive: true });
+  const workerPath = resolve(isolatedPath, 'stem-worker.js');
+  const workerCode = await readFile(workerPath, 'utf8');
+  assert.ok(workerCode.includes('ws://127.0.0.1:8788'));
+  await writeFile(workerPath, workerCode.replace('ws://127.0.0.1:8788', 'ws://127.0.0.1:' + stemPort));
+  extensionPath = isolatedPath;
+}
 const stemFixture = stemTest && !stemYouTube ? await readFile('.stem-gate/assets/fixture.ogg') : undefined;
 let helper;
 const fixture = createServer((req, res) => {
@@ -60,6 +73,7 @@ function launchChrome() {
 let [chrome, chromeExited] = launchChrome();
 async function closeChrome() {
   await send('Browser.close').catch(() => undefined);
+  if (!await Promise.race([chromeExited.then(() => true), wait(3000, false)])) chrome.kill();
   await chromeExited;
 }
 function send(method, params = {}, sessionId) {
@@ -109,8 +123,11 @@ async function until(read, accept, label, attempts = 24) {
 }
 
 async function startStemHelper(extensionId) {
+  const args = stemPort
+    ? ['-c', 'import sys; from scripts import stem_helper as helper; helper.PORT = int(sys.argv.pop(1)); helper.main()', stemPort]
+    : ['-m', 'scripts.stem_helper'];
   helper = spawn(process.env.MOODSHIFT_STEM_PYTHON ?? '.stem-gate/venv/Scripts/python.exe',
-    ['-m', 'scripts.stem_helper', '--extension-id', extensionId, '--device', process.env.MOODSHIFT_STEM_DEVICE ?? '1'],
+    [...args, '--extension-id', extensionId, '--device', process.env.MOODSHIFT_STEM_DEVICE ?? '1'],
     { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let helperLog = '';
   helper.stdout.on('data', data => { helperLog += data.toString(); });
@@ -119,9 +136,23 @@ async function startStemHelper(extensionId) {
   await until(() => helperLog, log => log.includes('helper ready'), 'Stem helper startup', 80);
 }
 
+async function stopStemHelper() {
+  if (!helper?.pid || helper.exitCode !== null || helper.signalCode !== null) return;
+  const exited = new Promise(resolve => helper.once('exit', resolve));
+  if (process.platform === 'win32') {
+    const task = spawn('taskkill.exe', ['/PID', String(helper.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    await new Promise(resolve => {
+      task.once('exit', resolve);
+      task.once('error', resolve);
+    });
+  } else helper.kill();
+  if (!await Promise.race([exited.then(() => true), wait(3000, false)])) helper.kill();
+  helper = undefined;
+}
+
 try {
   console.log((await send('Browser.getVersion')).product);
-  const { id } = await send('Extensions.loadUnpacked', { path: resolve('extension/dist') });
+  const { id } = await send('Extensions.loadUnpacked', { path: extensionPath });
   const origin = 'chrome-extension://' + id;
   const worker = await find(t => t.type === 'service_worker' && t.url.startsWith(origin), 'worker');
   let sw = await attach(worker.targetId);
@@ -203,6 +234,68 @@ try {
       assert.equal(staleRevision.ok, false);
       console.log('Gemini failure, unsupported response and stale edit checks passed.');
     }
+    if (process.env.MOODSHIFT_MEMORY_TEST) {
+      const status = () => evaluate(view, "document.querySelector('#memory-status').textContent");
+      const feedback = () => evaluate(view, "document.querySelector('#feedback').textContent");
+      const submit = prompt => evaluate(view, `(() => {
+        const field = document.querySelector('#prompt');
+        field.value = ${JSON.stringify(prompt)};
+        field.dispatchEvent(new Event('input'));
+        document.querySelector('#interpret').requestSubmit();
+      })()`);
+      const memory = id => evaluate(view, `document.querySelector('#memory-${id}').click()`);
+      await evaluate(view, `document.querySelector('#personalization').open = true;
+        window.memoryCalls = [];
+        window.preferenceList = [];
+        window.fetch = async (url, options) => {
+          const data = JSON.parse(options.body);
+          window.memoryCalls.push(data);
+          if (url.endsWith('/api/interpret')) {
+            return Response.json({ mode: 'patch', patch: { bassDb: data.personalization ? -5 : -6 }, summary: 'Reduced bass.', unsupported: [] });
+          }
+          if (data.action === 'remember') {
+            window.preferenceList.push(data.preference);
+            return Response.json({ remembered: true, processing: false });
+          }
+          if (data.action === 'view') return Response.json({ preferences: window.preferenceList });
+          if (!window.allowClear) return Response.json({ error: 'Supermemory did not confirm deletion.' }, { status: 502 });
+          window.preferenceList = [];
+          return Response.json({ cleared: true });
+        }`);
+      assert.equal(await evaluate(view, "document.querySelector('#memory-enabled').checked"), false);
+      await memory('enabled');
+      await until(status, text => text === 'Personalization enabled.', 'Local personalization enable');
+      await submit('Remember that I like warmer bass.');
+      await until(status, text => text === 'Preference saved to Supermemory.', 'Explicit preference prompt');
+      await evaluate(view, `(() => {
+        const field = document.querySelector('#memory-preference');
+        field.value = 'I like moderate reverb.'; field.dispatchEvent(new Event('input'));
+        document.querySelector('#memory-form').requestSubmit();
+      })()`);
+      await until(status, text => text === 'Preference saved to Supermemory.', 'Explicit preference form');
+      await memory('view');
+      await until(status, text => text === 'Preferences from Supermemory.', 'Remote preferences view');
+      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 2);
+      await submit('Remove all bass.');
+      await until(feedback, text => text.startsWith('Applied ✓'), 'Personalized Gemini ACK');
+      const calls = await evaluate(view, 'window.memoryCalls');
+      assert.deepEqual(calls.map(call => call.action ?? 'interpret'), ['remember', 'remember', 'view', 'interpret']);
+      assert.equal(calls[3].personalization.installationId, calls[0].installationId);
+      assert.equal(calls[3].personalization.enabled, true);
+      await memory('enabled');
+      await until(status, text => text.startsWith('Personalization disabled.'), 'Local personalization disable');
+      await submit('Remove all bass.');
+      await until(feedback, text => text.startsWith('Applied ✓'), 'Ordinary Gemini ACK');
+      assert.equal(await evaluate(view, "'personalization' in window.memoryCalls.at(-1)"), false);
+      await memory('clear');
+      await until(status, text => text === 'Supermemory did not confirm deletion.', 'Remote failure keeps list');
+      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 2);
+      await evaluate(view, 'window.allowClear = true');
+      await memory('clear');
+      await until(status, text => text === 'Supermemory confirmed remote preferences were cleared.', 'Remote clear ACK');
+      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 0);
+      console.log('Personalization opt-in, explicit saves, view, Gemini context, opt-out and remote clear passed with mock providers.');
+    }
   }
   await send('Extensions.triggerAction', { id, targetId });
   await wait(400);
@@ -240,6 +333,54 @@ try {
   assert.equal((await evaluate(sw, read)).status.phase, 'ready');
   assert.equal((await evaluate(sw, 'chrome.tabCapture.getCapturedTabs()')).find(tab => tab.tabId === current.session.tabId)?.status, 'stopped');
   console.log('Local tone, DSP controls, tab switching and Stop checks passed.');
+  if (process.env.MOODSHIFT_CHORDS_TEST) {
+    const songUrl = 'https://www.youtube.com/watch?v=PqJNc9KVIZE';
+    const { targetId: songTab } = await send('Target.createTarget', { url: songUrl, forTab: true });
+    const track = await find(t => t.url === songUrl, 'Songle example YouTube tab');
+    const song = await attach(track.targetId);
+    const readMedia = () => evaluate(song, `(() => {
+      const player = document.querySelector('#movie_player');
+      return { duration: player?.querySelector('video')?.duration, ad: player?.classList.contains('ad-showing') };
+    })()`);
+    await until(readMedia, state => state.duration > 260 && state.duration < 285 && !state.ad, 'Songle example YouTube source', 80);
+    await evaluate(song, "document.querySelector('#movie_player video').play().catch(() => undefined)");
+    await send('Extensions.triggerAction', { id, targetId: songTab });
+    const chordsPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'chords side panel')).targetId);
+    const openChords = () => evaluate(chordsPanel, "document.querySelector('#chords').open = true");
+    const readChords = () => evaluate(chordsPanel, `({
+      status: document.querySelector('#chords-status').textContent,
+      current: document.querySelector('#chord-current').textContent,
+      next: document.querySelector('#chord-next').textContent,
+      keyboard: Boolean(document.querySelector('.chord-piano')),
+      guitar: Boolean(document.querySelector('.chord-guitar')),
+    })`);
+    await openChords();
+    await until(readChords, value => value.status === 'Songle · Estimated chords', 'Live Songle timeline', 40);
+    async function seek(position, rate = 1) {
+      await evaluate(song, `(() => {
+        const video = document.querySelector('#movie_player video');
+        video.pause(); video.playbackRate = ${rate}; video.currentTime = ${position};
+      })()`);
+    }
+    const setOffset = offset => evaluate(chordsPanel, `(() => {
+      const input = document.querySelector('#lyrics-offset'); input.value = ${JSON.stringify(String(offset))};
+      input.dispatchEvent(new Event('change'));
+    })()`);
+    await seek(13.5);
+    await until(readChords, value => value.current === 'Eb' && value.next === 'Eb/Ab' && value.keyboard && value.guitar, 'Diagrams and next chord');
+    await seek(17);
+    await until(readChords, value => value.current === 'Eb/Ab', 'Forward chord seek');
+    await seek(16, 2);
+    await setOffset(1);
+    await until(readChords, value => value.current === 'Eb', 'Rate-adjusted chord offset');
+    await setOffset(0);
+    await seek(13.5);
+    await until(readChords, value => value.current === 'Eb', 'Backward chord seek');
+    assert.ok(await evaluate(chordsPanel, "chrome.storage.local.get('songleChordCacheV1').then(values => values.songleChordCacheV1?.PqJNc9KVIZE?.result?.events.length > 20)"));
+    await evaluate(chordsPanel, "document.querySelector('#stop').click()");
+    await until(readChords, value => value.status.startsWith('Select a YouTube'), 'Chord status cleared after Stop');
+    console.log('Live Songle timeline, diagrams, pause/seek, playback rate, shared offset, cache and Stop passed on its documented YouTube example.');
+  }
   if (process.env.MOODSHIFT_LYRICS_TEST) {
     const songUrl = 'https://www.youtube.com/watch?v=AEBld6I_AKs';
     const { targetId: songTab } = await send('Target.createTarget', { url: songUrl, forTab: true });
@@ -309,7 +450,7 @@ try {
       await evaluate(lyricsPanel, "document.querySelector('[data-stem=full]').click()");
       await until(async () => (await evaluate(sw, read)).status.stem?.mode, mode => mode === 'full',
         'Returned to full mix');
-      helper.kill();
+      await stopStemHelper();
       console.log('Lyrics and active instrumental stem ran on the same YouTube capture.');
     }
 
@@ -425,6 +566,28 @@ try {
     assert.equal(combined.effects.bassDb, capture.effects.bassDb);
     if (realGemini) console.log('Live Gemini prompt applied the instrumental stem and reverb in Chrome.');
     if (stemYouTube) console.log('Real YouTube tab produced both stem signals:', powers);
+    if (process.env.MOODSHIFT_PRESETS_TEST) {
+      const presetStatus = () => evaluate(panelView, "document.querySelector('#saved-preset-status').textContent");
+      await evaluate(panelView, `(() => {
+        document.querySelector('#saved-presets').open = true;
+        const name = document.querySelector('#saved-preset-name');
+        name.value = 'Instrumental preset'; name.dispatchEvent(new Event('input'));
+        document.querySelector('#saved-preset-save').click();
+      })()`);
+      await until(presetStatus, status => status === 'Preset saved.', 'Save active Instrumental');
+      await click('Full mix');
+      await until(stemState, stem => stem.mode === 'full', 'Full mix before restore');
+      await click('Reset');
+      await until(() => evaluate(panelView, "!document.querySelector('#saved-preset-apply').disabled"),
+        Boolean, 'Saved preset ready after reset');
+      await evaluate(panelView, "document.querySelector('#saved-preset-apply').click()");
+      await until(presetStatus, status => status === 'Applied ✓ · Instrumental preset', 'Restore requested Instrumental');
+      const restored = (await evaluate(sw, read)).status;
+      assert.deepEqual(restored.effects, combined.effects);
+      assert.equal(restored.stem.mode, 'instrumental');
+      assert.equal(restored.monitor, combined.monitor);
+      console.log('Saved preset restored exact live DSP settings and active Instrumental.');
+    }
     if (process.env.MOODSHIFT_STEM_SUSTAIN) {
       const position = () => evaluate(player, `document.querySelector('${media}').currentTime`);
       const start = await position();
@@ -451,7 +614,7 @@ try {
       state => state.phase === 'capturing' && state.session.tabId === capture.session.tabId, 'Recapture stem source');
     await click('Vocals');
     await until(stemState, stem => stem.phase === 'active' && stem.mode === 'vocals', 'Reconnected helper after tab switch');
-    helper.kill();
+    await stopStemHelper();
     await until(stemState, stem => stem.phase === 'unavailable', 'Helper-disconnect fallback');
     const recovered = (await evaluate(sw, read)).status;
     assert.equal(recovered.session.id, resumedCapture.session.id);
@@ -534,7 +697,7 @@ try {
   if (process.env.MOODSHIFT_PRESETS_TEST) {
     await closeChrome();
     [chrome, chromeExited] = launchChrome();
-    const reloaded = await send('Extensions.loadUnpacked', { path: resolve('extension/dist') });
+    const reloaded = await send('Extensions.loadUnpacked', { path: extensionPath });
     assert.equal(reloaded.id, id);
     const restarted = await send('Target.createTarget', { url: url + '/?restarted', forTab: true });
     const restartedPage = await find(t => t.type === 'page' && t.url === url + '/?restarted', 'restarted tone page');
@@ -565,7 +728,7 @@ try {
     console.log('Saved preset persisted across Chrome restart and restored exact DSP settings and monitor offline.');
   }
 } finally {
-  helper?.kill();
+  await stopStemHelper();
   await send('Browser.close').catch(() => undefined);
   chrome.kill();
   await chromeExited;

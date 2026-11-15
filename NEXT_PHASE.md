@@ -1,7 +1,6 @@
 # MoodShift next phase
 
-1. Verify Songle’s documented API access and terms or choose another documented source for track-level chord retrieval. Validate recording matches with title, artist and duration.
-2. Display timed chords beside the lyrics using the existing YouTube playback clock and lyric offset. Keep seeking, pausing and rate changes synchronized.
-3. Save user-named audio presets locally using the existing effect schema and validation.
-4. Add opt-in Supermemory personalization with clear controls for reviewing and deleting saved preferences.
-5. Evaluate optional AI fallbacks for missing metadata or chord data. Clearly label generated output and keep it independent of audio playback.
+1. Reuse the chord provider interface and lyric lookup results to offer an explicit fallback when a verified online lookup returns missing or empty. Start with manual import of timestamped chords or licensed LRC files for the exact video ID. Validate increasing timestamps, the recording duration, chord labels, and provenance. Keep the shared YouTube clock and display offset.
+2. Prototype optional chord estimation separately with authorized, annotated test audio. Compare a lightweight chroma-based baseline and a small chord recognition model on duration-weighted accuracy, boundary error, hardware throughput, and peak memory. Verify handling of silence, common chords, and unknown segments. For timed lyric transcription, separately evaluate word error rate, line timestamps, and permission to use the source audio and display the output.
+3. If a model meets the accuracy and hardware targets, integrate it behind an opt-in provider. Run analysis off the audio path, bound the workload, and cancel it on track changes or Stop. Validate the timeline in seconds, label it as an estimate, and leave low-confidence segments empty. Cache validated events by video, provider, and model version. Disclose any cost and audio transfer before enabling an external service.
+4. Retest seeks, pause, rate and offsets, ad transitions, stale results, helper failures, and capture continuity. Keep the current missing-data states until the fallback passes fixture validation and real Chrome listening checks.

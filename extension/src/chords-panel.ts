@@ -74,7 +74,7 @@ export function mountChords(root: HTMLElement) {
     const result = session.result;
     const visible = playback && !playback.ad && Number.isFinite(playback.song.duration) && playback.song.duration > 0;
     retry.hidden = !visible || (result?.kind !== 'unavailable' && result?.kind !== 'invalid');
-    status.textContent = !playback ? 'Select a YouTube watch tab with the MoodShift icon.'
+    const message = !playback ? 'Select a YouTube watch tab with the MoodShift icon.'
       : playback.ad ? 'Chords will resume after the ad.'
       : !visible ? 'A finite YouTube video is needed.'
       : !result ? 'Finding chords…'
@@ -83,6 +83,7 @@ export function mountChords(root: HTMLElement) {
       : result.kind === 'empty' ? 'Songle returned an empty chord progression.'
       : result.kind === 'invalid' ? 'Could not read the Songle response.'
       : 'Songle is unavailable.';
+    if (status.textContent !== message) status.textContent = message;
 
     const found = result?.kind === 'found' ? result.events : undefined;
     content.hidden = !visible || !found;

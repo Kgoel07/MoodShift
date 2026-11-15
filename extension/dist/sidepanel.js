@@ -548,7 +548,8 @@
       const result = session.result;
       const visible = playback && !playback.ad && Number.isFinite(playback.song.duration) && playback.song.duration > 0;
       retry.hidden = !visible || result?.kind !== "unavailable" && result?.kind !== "invalid";
-      status2.textContent = !playback ? "Select a YouTube watch tab with the MoodShift icon." : playback.ad ? "Chords will resume after the ad." : !visible ? "A finite YouTube video is needed." : !result ? "Finding chords\u2026" : result.kind === "found" ? "Songle \xB7 Estimated chords" : result.kind === "missing" ? "Songle has no chord data for this video." : result.kind === "empty" ? "Songle returned an empty chord progression." : result.kind === "invalid" ? "Could not read the Songle response." : "Songle is unavailable.";
+      const message = !playback ? "Select a YouTube watch tab with the MoodShift icon." : playback.ad ? "Chords will resume after the ad." : !visible ? "A finite YouTube video is needed." : !result ? "Finding chords\u2026" : result.kind === "found" ? "Songle \xB7 Estimated chords" : result.kind === "missing" ? "Songle has no chord data for this video." : result.kind === "empty" ? "Songle returned an empty chord progression." : result.kind === "invalid" ? "Could not read the Songle response." : "Songle is unavailable.";
+      if (status2.textContent !== message) status2.textContent = message;
       const found = result?.kind === "found" ? result.events : void 0;
       content.hidden = !visible || !found;
       if (found !== events) {
