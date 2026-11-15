@@ -1,28 +1,25 @@
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import dotenv from 'dotenv';
 import express, { type ErrorRequestHandler } from 'express';
 import { interpret, ProxyError, type ModelConfig } from './interpret';
 import { requestSchema } from './schema';
-import { createMemory, MemoryError, memoryRequest, type Memory } from './memory';
+import { MemoryError, memoryRequest, type Memory } from './memory';
+import { demoGuard, extensionOrigin, type AccessPolicy } from './access';
 
-const extensionOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
-
-export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, memory?: Memory) {
+export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, memory?: Memory,
+  policy: AccessPolicy = { mode: 'local' }) {
   const app = express();
   app.disable('x-powered-by');
   app.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
     res.vary('Origin');
     const origin = req.get('Origin');
-    if (origin !== undefined && !extensionOrigin.test(origin)) {
-      res.status(403).json({ error: 'Only Chrome extension origins may call the proxy from a browser.' });
+    if (origin !== undefined && (!extensionOrigin.test(origin) || (policy.origins && !policy.origins.has(origin)))) {
+      res.status(403).json({ error: 'This browser origin is not allowed.' });
       return;
     }
     if (origin) {
       res.set('Access-Control-Allow-Origin', origin);
       res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.set('Access-Control-Allow-Headers', 'Content-Type');
+      res.set('Access-Control-Allow-Headers', policy.mode === 'local' ? 'Content-Type' : 'Content-Type, Authorization');
     }
     if (req.method === 'OPTIONS') {
       res.sendStatus(origin ? 204 : 403);
@@ -34,6 +31,7 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, me
   app.get('/health', (_req, res) => {
     res.json({ ok: true, aiConfigured: Boolean(config.apiKey), model: config.model });
   });
+  if (policy.mode !== 'local') app.use('/api', demoGuard(policy.token));
 
   app.post('/api/interpret', express.json({ limit: '8kb', inflate: false }), async (req, res) => {
     if (!req.is('application/json')) {
@@ -51,7 +49,9 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, me
     });
     try {
       const { personalization, ...audioRequest } = request.data;
-      const preferences = config.apiKey && personalization?.enabled
+      const memoryAllowed = policy.mode === 'local'
+        || (policy.mode === 'cloud-owner' && personalization?.installationId === policy.installationId);
+      const preferences = config.apiKey && memoryAllowed && personalization?.enabled
         ? await memory?.context(personalization.installationId, controller.signal) : undefined;
       if (controller.signal.aborted) return;
       const result = await interpret(audioRequest, config, fetcher, controller.signal, preferences);
@@ -63,7 +63,13 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, me
     }
   });
 
-  app.post('/api/memory', express.json({ limit: '2kb', inflate: false }), async (req, res) => {
+  app.post('/api/memory', (req, res, next) => {
+    if (policy.mode === 'cloud-demo') {
+      res.status(403).json({ error: 'Personalization is available only on the local or single-operator backend.' });
+      return;
+    }
+    next();
+  }, express.json({ limit: '2kb', inflate: false }), async (req, res) => {
     if (!req.is('application/json')) {
       res.status(415).json({ error: 'Send application/json.' });
       return;
@@ -73,8 +79,14 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, me
       res.status(400).json({ error: 'Provide a valid installation ID and preference action. A preference must be a single line.' });
       return;
     }
+    if (policy.mode === 'cloud-owner' && request.data.installationId !== policy.installationId) {
+      res.status(403).json({ error: 'This installation cannot access cloud preferences.' });
+      return;
+    }
     if (!memory) {
-      res.status(503).json({ error: 'Set SUPERMEMORY_API_KEY in server/.env and restart the proxy.' });
+      res.status(503).json({ error: policy.mode === 'local'
+        ? 'Set SUPERMEMORY_API_KEY in server/.env and restart the proxy.'
+        : 'Supermemory is not configured on this backend.' });
       return;
     }
     const controller = new AbortController();
@@ -97,14 +109,4 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, me
   };
   app.use(inputErrors);
   return app;
-}
-
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  dotenv.config({ path: fileURLToPath(new URL('../.env', import.meta.url)) });
-  const model = process.env.GEMINI_MODEL?.trim() || 'gemini-3.1-flash-lite';
-  const port = Number(process.env.PORT ?? 8787);
-  if (port !== 8787) throw new Error('PORT must be 8787 to match the extension endpoint.');
-  const app = createApp({ apiKey: process.env.GEMINI_API_KEY?.trim() || '', model },
-    fetch, createMemory(process.env.SUPERMEMORY_API_KEY));
-  app.listen(port, '127.0.0.1', () => console.log(`MoodShift proxy ready at http://127.0.0.1:${port}`));
 }

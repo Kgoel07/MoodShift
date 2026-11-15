@@ -94,6 +94,7 @@ button:disabled { opacity: .55; cursor: default; }
 #memory-help, #memory-status { color: var(--muted); font-size: 11px; margin: 4px 0 8px; overflow-wrap: anywhere; }
 #memory-form .saved-preset-actions { margin: 0; }
 #memory-list { margin: 5px 0 8px; padding-inline-start: 18px; overflow-wrap: anywhere; }
+#cloud-code-status, #cloud-stem-note { color: var(--muted); font-size: 11px; margin: 4px 0 8px; overflow-wrap: anywhere; }
 .stem-section { margin-top: 14px; }
 #stems { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 #stems button { font-size: 12px; padding-inline: 9px; }

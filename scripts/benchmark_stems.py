@@ -145,6 +145,7 @@ class DevicePlayout:
 
 def run(model, mixture, hop, overlap, delay, playout=None):
     timings = []
+    inference = []
     ready_lags = []
     stems = []
     underruns = 0
@@ -156,6 +157,7 @@ def run(model, mixture, hop, overlap, delay, playout=None):
     for offset, vocal, wall_time, ready in windows(mixture, model.vocals, hop, overlap,
                                                    start=started if delay is not None else None):
         timings.append(wall_time)
+        inference.append(model.last_inference_seconds)
         peak_ram = max(peak_ram, process.memory_info().rss)
         if delay is not None:
             timestamp = offset / RATE
@@ -188,6 +190,9 @@ def run(model, mixture, hop, overlap, delay, playout=None):
         "processing_median_s": float(np.median(timings)),
         "processing_p95_s": float(np.percentile(timings, 95)),
         "processing_max_s": max(timings),
+        "onnx_inference_median_s": float(np.median(inference)),
+        "onnx_inference_p95_s": float(np.percentile(inference, 95)),
+        "onnx_inference_max_s": max(inference),
         "audio_seconds_per_processing_second": mixture.shape[1] / RATE / sum(timings),
         "peak_sampled_rss_mib": peak_ram / 1024**2,
         "mix_rms_dbfs": gain_db(mixture),
@@ -216,13 +221,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("fixture", type=Path, nargs="?")
     parser.add_argument("--model", type=Path, default=Path(".stem-gate/assets/vocals.onnx"))
-    parser.add_argument("--device", default="0", help="DirectML adapter index or cpu")
+    parser.add_argument("--device", default="0", help="DirectML or CUDA device index, or cpu for an offline comparison")
     parser.add_argument("--offset", type=float, default=15)
     parser.add_argument("--seconds", type=float, default=24)
     parser.add_argument("--window", type=float, default=2)
     parser.add_argument("--overlap", type=float, default=0.16)
     parser.add_argument("--delay", type=float, help="Pace real-time input and test this software playout deadline")
     parser.add_argument("--play-device", type=int, help="Optional Windows WASAPI output device index for DAC timing")
+    parser.add_argument("--require-realtime", action="store_true", help="Fail on a missed deadline, inference over 650 ms, or throughput at/below 1x")
     parser.add_argument("--reference-vocals", type=Path, help="Mix these isolated vocals over the instrumental fixture")
     parser.add_argument("--output", type=Path, help="Write the authorized fixture excerpt and its two stems as WAV")
     parser.add_argument("--self-test", action="store_true")
@@ -236,6 +242,8 @@ def main():
         parser.error(f"--delay must be between zero and {MAX_LAG} seconds")
     if args.play_device is not None and args.delay is None:
         parser.error("--play-device requires --delay")
+    if args.require_realtime and args.delay is None:
+        parser.error("--require-realtime requires --delay")
     pcm, source_rate = read_stereo(args.fixture)
     start = round(args.offset * RATE)
     count = round(args.seconds * RATE)
@@ -279,6 +287,9 @@ def main():
     if args.reference_vocals:
         report.update(reference_scores(vocal_reference, backing_reference, vocals, instrumental))
     print(json.dumps(report, indent=2), flush=True)
+    if args.require_realtime and (report["software_playout_deadline_misses"] or report["processing_max_s"] > 0.65
+                                  or report["audio_seconds_per_processing_second"] <= 1):
+        raise SystemExit("FAIL: inference or playout missed the real-time gate.")
     if args.output:
         args.output.mkdir(parents=True, exist_ok=True)
         for name, samples in [("mix", mixture), ("vocals", vocals), ("instrumental", instrumental)]:

@@ -4,7 +4,7 @@ MoodShift applies live EQ, filters, reverb, echo, and distortion to one selected
 
 ## Install and run
 
-1. Install Node.js 20+ and run `npm install` from the project root.
+1. Install Node.js 22 (Node.js 20 also works locally) and run `npm install` from the project root.
 2. For Gemini, copy `server/.env.example` to `server/.env`. On PowerShell, run `Copy-Item server/.env.example server/.env` if the file does not exist. Set `GEMINI_API_KEY` in that file using a key from a Google AI Studio project on the Free tier. The default model is Gemini 3.1 Flash-Lite (`gemini-3.1-flash-lite`), with free input and output within the project’s quota. Keep the key out of Git and the extension. [Google AI Studio API keys](https://aistudio.google.com/apikey) · [Gemini pricing](https://aistudio.google.com/docs/pricing#gemini-3.1-flash-lite)
 3. Run `npm run dev:server` in one terminal. The proxy listens on `127.0.0.1:8787`. Visit [proxy health](http://127.0.0.1:8787/health) to check reachability and whether a key is configured. Account access and credits are verified by an actual prompt.
 4. Run `npm run build:extension`.
@@ -130,3 +130,7 @@ Use authorized audio. A Creative Commons option is Kevin MacLeod’s “Carefree
 After building, run `node tests/chrome-smoke.mjs` with current desktop Chrome installed. The script uses a disposable headless profile and a locally generated tone. On PowerShell, set `$env:MOODSHIFT_YOUTUBE_TEST='1'` before the command to add the YouTube check. Also set `$env:MOODSHIFT_WORKER_TEST='1'` to wait for the worker to go idle during YouTube playback. Set `MOODSHIFT_CHROME_PATH` to the Chrome executable if it is installed outside the default Windows location. This test checks capture and state programmatically. Use the listening checklist to assess audio quality and direct speaker output.
 
 Set `MOODSHIFT_CHORDS_TEST=1` to exercise the live Songle timeline, `MOODSHIFT_PRESETS_TEST=1` to verify exact restoration across a Chrome restart, and `MOODSHIFT_MEMORY_TEST=1` to exercise the personalization controls with mocked provider responses. If another MoodShift session is using the stem helper, set `MOODSHIFT_STEM_TEST_PORT` to a free port such as `18788`. The test uses a disposable copy of the bundled extension and starts a separate helper on that port.
+
+## Private cloud demo
+
+The default build still uses the local Gemini/Supermemory proxy and the local stem helper. The production build writes to `extension/dist-cloud` and uses a configured HTTPS API and WSS stem worker. A demo code is entered after installation. [Vercel setup](docs/DEPLOY_VERCEL.md) · [AWS CUDA worker setup](docs/DEPLOY_AWS_GPU.md) · [Cloud smoke test](docs/CLOUD_SMOKE_TEST.md) · [Deployment status](CLOUD_DEPLOY_STATUS.md)

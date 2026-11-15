@@ -1,4 +1,5 @@
-import { stemDelaySeconds, stemHeaderBytes, stemPacketFrames, stereoFrameBytes, type PCMMessage } from './shared/stem-pcm';
+import { stemHeaderBytes, stemPacketFrames, stereoFrameBytes, type PCMMessage } from './shared/stem-pcm';
+import { deployment } from './shared/deployment';
 
 declare const sampleRate: number;
 declare class AudioWorkletProcessor {
@@ -17,8 +18,8 @@ function packetView(buffer: ArrayBuffer): Packet {
 }
 
 class StemAudio extends AudioWorkletProcessor {
-  private readonly delay = Math.round(sampleRate * stemDelaySeconds);
-  private readonly capacity = Math.ceil(sampleRate * 4);
+  private readonly delay = Math.round(sampleRate * deployment.stemDelaySeconds);
+  private readonly capacity = Math.ceil(sampleRate * Math.max(4, deployment.stemDelaySeconds + 0.25));
   private readonly dry = new Float32Array(this.capacity * 2);
   private readonly vocals = new Float32Array(this.capacity * 2);
   private readonly pool: Packet[] = [];

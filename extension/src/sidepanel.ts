@@ -7,7 +7,8 @@ import { mountPersonalization } from './personalization-panel';
 import { explicitPreference } from './shared/preferences';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
 import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
-import { stemDelaySeconds } from './shared/stem-pcm';
+import { deployment, demoCodePattern } from './shared/deployment';
+import { apiRequest, demoCodeKey } from './api-client';
 
 const statusLabel = document.querySelector<HTMLParagraphElement>('#status')!;
 const chords = mountChords(document.querySelector<HTMLElement>('#chords')!);
@@ -40,6 +41,31 @@ const personalization = mountPersonalization(document.querySelector<HTMLElement>
     feedback.textContent = 'Personalization changed. Submit the prompt again.';
   }
 });
+
+if (deployment.mode === 'production') {
+  document.querySelector<HTMLElement>('#cloud-settings')!.hidden = false;
+  document.querySelector<HTMLElement>('#cloud-stem-note')!.hidden = false;
+  const settings = document.querySelector<HTMLFormElement>('#cloud-code-form')!;
+  const field = document.querySelector<HTMLInputElement>('#cloud-code')!;
+  const result = document.querySelector<HTMLElement>('#cloud-code-status')!;
+  settings.addEventListener('submit', async event => {
+    event.preventDefault();
+    const code = field.value.trim();
+    if (code && !demoCodePattern.test(code)) {
+      result.textContent = 'Enter a 32–128 character code using letters, numbers, hyphens, or underscores.';
+      return;
+    }
+    try {
+      if (code) await chrome.storage.local.set({ [demoCodeKey]: code });
+      else await chrome.storage.local.remove(demoCodeKey);
+      cancelInterpretation();
+      field.value = '';
+      result.textContent = code ? 'Private demo code saved.' : 'Private demo code cleared.';
+    } catch {
+      result.textContent = 'Could not update the private demo code.';
+    }
+  });
+}
 
 function updateApply(): void {
   applyButton.disabled = status.phase !== 'capturing' || stopping || commandPending
@@ -168,11 +194,11 @@ function render(next: CaptureStatus): void {
   }
   switch (stem?.phase) {
     case 'loading': stemLabel.textContent = 'Connecting to the local model…'; break;
-    case 'buffering': stemLabel.textContent = 'Buffering stem audio…'; break;
+    case 'buffering': stemLabel.textContent = `Buffering stem audio · ${deployment.stemDelaySeconds} s delay…`; break;
     case 'active':
       stemLabel.textContent = next.phase === 'capturing' && next.monitor === 'original'
         ? 'Original · Live mix. Modified resumes the delayed stem.'
-        : `Active · Audio trails video by about ${stemDelaySeconds} s.`;
+        : `Active · Audio trails video by about ${deployment.stemDelaySeconds} s.`;
       break;
     case 'unavailable': stemLabel.textContent = `Unavailable · ${stem.message}`; break;
     default: stemLabel.textContent = '';
@@ -326,16 +352,11 @@ form.addEventListener('submit', async event => {
   feedback.textContent = 'Interpreting…';
   const deadline = setTimeout(() => request.controller.abort(), 15_000);
   try {
-    const response = await fetch('http://127.0.0.1:8787/api/interpret', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const response = await apiRequest('/api/interpret', {
         prompt, currentEffects: effects,
         audioFeatures: session.muted || outputPaused ? silentFeatures : features,
         personalization: personalization.context(),
-      }),
-      signal: request.controller.signal,
-    });
+    }, request.controller.signal);
     const body = await response.json();
     if (interpretation?.id !== request.id) return;
     if (!response.ok) {
@@ -368,7 +389,8 @@ form.addEventListener('submit', async event => {
     if (request.controller.signal.aborted) {
       feedback.textContent = 'Error · Gemini timed out. Try again.';
     } else if (error instanceof TypeError || error instanceof GeminiUnavailable) {
-      const detail = error instanceof GeminiUnavailable ? error.message : 'Start the local proxy with npm run dev:server.';
+      const detail = error instanceof GeminiUnavailable ? error.message : deployment.mode === 'development'
+        ? 'Start the local proxy with npm run dev:server.' : 'Check the configured cloud API connection.';
       feedback.textContent = `Offline · Gemini unavailable. Presets and manual controls still work. ${detail}`;
     } else {
       feedback.textContent = `Error · ${error instanceof Error ? error.message : 'Invalid Gemini reply.'}`;

@@ -65,6 +65,7 @@
         <button type="button" data-stem="vocals" aria-pressed="false" disabled>Vocals</button>
       </div>
       <p id="stem-status" role="status"></p>
+      <p id="cloud-stem-note" hidden>Selecting a stem streams this tab’s audio to the configured cloud worker.</p>
     </section>
     <section id="lyrics" aria-labelledby="lyrics-label">
       <h2 id="lyrics-label">Lyrics</h2>
@@ -116,6 +117,15 @@
       </div>
       <p id="memory-status" role="status"></p>
       <ul id="memory-list" hidden></ul>
+    </details>
+    <details id="cloud-settings" hidden>
+      <summary>Private demo access</summary>
+      <form id="cloud-code-form" class="saved-preset-fields">
+        <label for="cloud-code">Demo access code</label>
+        <input id="cloud-code" type="password" maxlength="128" autocomplete="off" placeholder="Leave blank to clear">
+        <div class="saved-preset-actions"><button type="submit">Save demo code</button></div>
+      </form>
+      <p id="cloud-code-status" role="status"></p>
     </details>
     <footer><button id="stop" type="button" disabled>Stop processing</button></footer>
   </main>

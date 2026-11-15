@@ -1,6 +1,8 @@
 import type { AudioEngine } from './audio-engine';
 import type { StemWorkerStart } from './shared/stem-pcm';
 import type { StemMode } from './shared/types';
+import { deployment } from './shared/deployment';
+import { cloudDemoCode } from './api-client';
 
 type Stem = Exclude<StemMode, 'full'>;
 type WorkerEvent = { type: 'buffering' | 'active' } | { type: 'error'; message: string };
@@ -31,11 +33,19 @@ export class StemStream {
       this.resolveReady = resolve;
       this.rejectReady = reject;
     });
-    this.timer = setTimeout(() => this.fail('The local stem helper did not start in time.'), 5500);
-    void this.start(buffering).catch(() => this.fail('Could not initialize local stem playback.'));
+    this.timer = setTimeout(() => this.fail('The stem helper did not start in time.'), (deployment.stemDelaySeconds + 2.7) * 1000);
+    void this.start(buffering).catch(() => this.fail('Could not initialize stem playback.'));
   }
 
   private async start(buffering: () => void): Promise<void> {
+    let demoCode: string | undefined;
+    try {
+      demoCode = await cloudDemoCode();
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : 'Could not read the private demo code.');
+      return;
+    }
+    if (this.closed) return;
     let module = loaded.get(this.context);
     if (!module) {
       module = this.context.audioWorklet.addModule(chrome.runtime.getURL('stem-worklet.js'));
@@ -80,11 +90,12 @@ export class StemStream {
       }
       if (data.type === 'error') this.fail(data.message);
     };
-    worker.onerror = () => this.fail('Local stem communication failed.');
+    worker.onerror = () => this.fail('Stem communication failed.');
     node.onprocessorerror = () => this.fail('Chrome stopped the stem audio processor.');
     node.port.postMessage(channel.port1, [channel.port1]);
     worker.postMessage({
       port: channel.port2, sampleRate: this.context.sampleRate, sessionId: crypto.randomUUID().replaceAll('-', ''),
+      demoCode,
     } satisfies StemWorkerStart, [channel.port2]);
   }
 

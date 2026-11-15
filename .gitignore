@@ -5,3 +5,8 @@ node_modules/
 __pycache__/
 server/.env
 .env
+.env.*
+!.env.example
+!.env.stem.example
+.vercel/
+extension/dist-cloud/

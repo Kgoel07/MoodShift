@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { cp, rm, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { rm, mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 
@@ -11,16 +11,19 @@ const profile = await mkdtemp(resolve(testDir, 'profile-'));
 const stemTest = Boolean(process.env.MOODSHIFT_STEM_TEST);
 const stemYouTube = Boolean(process.env.MOODSHIFT_STEM_YOUTUBE);
 const stemPort = process.env.MOODSHIFT_STEM_TEST_PORT;
+const cloudBuild = process.env.MOODSHIFT_CLOUD_BUILD_TEST === '1';
+const smokeCode = 'cloud-smoke-placeholder-' + 'x'.repeat(32);
 let extensionPath = resolve('extension/dist');
-if (stemPort) {
-  assert.match(stemPort, /^[1-9][0-9]{3,4}$/);
-  assert.ok(Number(stemPort) <= 65535 && !['8787', '8788'].includes(stemPort));
+if (stemPort || cloudBuild) {
+  if (stemPort) {
+    assert.match(stemPort, /^[1-9][0-9]{3,4}$/);
+    assert.ok(!cloudBuild && Number(stemPort) <= 65535 && !['8787', '8788'].includes(stemPort));
+  }
   const isolatedPath = resolve(profile, 'isolated-extension');
-  await cp(extensionPath, isolatedPath, { recursive: true });
-  const workerPath = resolve(isolatedPath, 'stem-worker.js');
-  const workerCode = await readFile(workerPath, 'utf8');
-  assert.ok(workerCode.includes('ws://127.0.0.1:8788'));
-  await writeFile(workerPath, workerCode.replace('ws://127.0.0.1:8788', 'ws://127.0.0.1:' + stemPort));
+  const env = { ...process.env, STEM_WS_URL: stemPort ? 'ws://127.0.0.1:' + stemPort : 'wss://stems.example.com/stem',
+    API_BASE_URL: cloudBuild ? 'https://api.example.com' : 'http://127.0.0.1:8787' };
+  execFileSync(process.execPath, ['--import', 'tsx', 'scripts/build-extension.mjs',
+    '--mode', cloudBuild ? 'production' : 'development', '--outdir', isolatedPath], { stdio: 'inherit', env });
   extensionPath = isolatedPath;
 }
 const stemFixture = stemTest && !stemYouTube ? await readFile('.stem-gate/assets/fixture.ogg') : undefined;
@@ -105,9 +108,18 @@ async function attach(targetId) {
   return (await send('Target.attachToTarget', { targetId, flatten: true })).sessionId;
 }
 async function evaluate(session, expression) {
-  const { result, exceptionDetails } = await send('Runtime.evaluate', {
-    expression, awaitPromise: true, returnByValue: true, userGesture: true,
-  }, session);
+  const params = { expression, awaitPromise: true, returnByValue: true, userGesture: true };
+  let evaluation;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      evaluation = await send('Runtime.evaluate', params, session);
+      break;
+    } catch (error) {
+      if (!error.message.includes('Cannot find default execution context') || attempt === 19) throw error;
+      await wait(150);
+    }
+  }
+  const { result, exceptionDetails } = evaluation;
   if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
   return result.value;
 }
@@ -133,7 +145,10 @@ async function startStemHelper(extensionId) {
   helper.stdout.on('data', data => { helperLog += data.toString(); });
   helper.stderr.on('data', data => { helperLog += data.toString(); });
   helper.on('error', error => { helperLog += error.message; });
-  await until(() => helperLog, log => log.includes('helper ready'), 'Stem helper startup', 80);
+  await until(() => {
+    if (helper.exitCode !== null) throw new Error('Stem helper exited during startup: ' + helperLog);
+    return helperLog;
+  }, log => log.includes('helper ready'), 'Stem helper startup', 180);
 }
 
 async function stopStemHelper() {
@@ -174,6 +189,17 @@ try {
     assert.ok(capture.status.features.rms > 0.03, 'local tone reached the real analyser');
     const panel = await find(t => t.url === origin + '/sidepanel.html', 'side panel');
     const view = await attach(panel.targetId);
+    if (cloudBuild) {
+      const manifest = await evaluate(view, 'chrome.runtime.getManifest()');
+      assert.ok(manifest.host_permissions.includes('https://api.example.com/*'));
+      assert.ok(manifest.host_permissions.includes('wss://stems.example.com/*'));
+      assert.ok(!manifest.host_permissions.some(pattern => pattern.includes('127.0.0.1')));
+      await evaluate(view, `document.querySelector('#cloud-settings').open = true;
+        document.querySelector('#cloud-code').value = ${JSON.stringify(smokeCode)};
+        document.querySelector('#cloud-code-form').requestSubmit()`);
+      await until(() => evaluate(view, "document.querySelector('#cloud-code-status').textContent"),
+        status => status === 'Private demo code saved.', 'Code saved through production UI');
+    }
     const click = name => evaluate(view, `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)}).click()`);
     await click('Dreamy');
     await wait(400);
@@ -202,6 +228,17 @@ try {
     if (await evaluate(view, "Boolean(document.querySelector('#interpret'))")) {
       const getFeedback = () => evaluate(view, "document.querySelector('#feedback').textContent");
       const submit = () => evaluate(view, "(() => { const field = document.querySelector('#prompt'); field.value = 'A little more bass'; field.dispatchEvent(new Event('input')); document.querySelector('#interpret').requestSubmit(); })()");
+      if (cloudBuild) {
+        await evaluate(view, `window.fetch = (url, init) => {
+          window.cloudRequest = { url: String(url), authorization: init.headers.Authorization, redirect: init.redirect };
+          return Promise.resolve(Response.json({ mode:'unsupported', patch:{}, summary:'Unsupported', unsupported:['test'] }));
+        }`);
+        await submit();
+        await until(getFeedback, text => text.includes('Unsupported'), 'Production API request completed');
+        assert.deepEqual(await evaluate(view, 'window.cloudRequest'),
+          { url: 'https://api.example.com/api/interpret', authorization: 'Bearer ' + smokeCode, redirect: 'error' });
+        console.log('Production extension loaded with exact host permissions and sent demo authentication only to its configured HTTPS API.');
+      }
       await evaluate(view, "window.unmockedFetch = window.fetch.bind(window); window.fetch = () => Promise.reject(new TypeError('Simulated proxy outage'));");
       await submit();
       await wait(400);
@@ -499,7 +536,11 @@ try {
     );
     const panel = await find(t => t.url === origin + '/sidepanel.html', 'stem panel');
     const panelView = await attach(panel.targetId);
-    const click = name => evaluate(panelView, `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)}).click()`);
+    const click = async name => {
+      const button = `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)})`;
+      await until(() => evaluate(panelView, `(${button})?.disabled === false`), Boolean, name + ' is available');
+      await evaluate(panelView, `(${button}).click()`);
+    };
     const feedback = () => evaluate(panelView, "document.querySelector('#feedback').textContent");
     const stemState = async () => (await evaluate(sw, read)).status.stem;
     const submit = async prompt => {

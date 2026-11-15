@@ -1,5 +1,8 @@
 "use strict";
 (() => {
+  // <define:__MOODSHIFT_DEPLOYMENT__>
+  var define_MOODSHIFT_DEPLOYMENT_default = { mode: "development", apiBaseUrl: "http://127.0.0.1:8787", stemWsUrl: "ws://127.0.0.1:8788", stemDelaySeconds: 2.8 };
+
   // extension/src/shared/effects.ts
   var effectSpecs = {
     bassDb: { label: "Bass shelf", min: -12, max: 8, neutral: 0, step: 0.1, unit: "dB" },
@@ -867,6 +870,82 @@
     if (/^i usually prefer\s+\S/i.test(text)) return text;
   }
 
+  // extension/src/shared/deployment.ts
+  var demoCodePattern = /^[A-Za-z0-9_-]{32,128}$/;
+  var dnsName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+  function endpoint(raw, name, protocol, local, forStems) {
+    const invalid = new Error(`${name} must be a ${protocol} endpoint on ${local ? "127.0.0.1" : "a specific public DNS hostname"}.`);
+    let url;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw invalid;
+    }
+    if (raw !== raw.trim() || !raw.startsWith(protocol + "//") || url.protocol !== protocol || url.username || url.password || /[\s?#\\@]/.test(raw) || url.pathname !== "/" && !(forStems && !local && url.pathname === "/stem")) throw invalid;
+    if (raw !== url.origin && raw !== url.href) throw invalid;
+    if (local) {
+      if (url.hostname !== "127.0.0.1" || (forStems ? Number(url.port) < 1024 : url.port !== "8787")) throw invalid;
+    } else if (url.port || !dnsName.test(url.hostname) || /\.(local|localhost|internal)$/.test(url.hostname)) {
+      throw invalid;
+    }
+    return url;
+  }
+  function deploymentFromEnv(mode, env) {
+    if (mode !== "development" && mode !== "production") throw new Error("Build mode must be development or production.");
+    const local = mode === "development";
+    const api = endpoint(
+      env.API_BASE_URL ?? (local ? "http://127.0.0.1:8787" : ""),
+      "API_BASE_URL",
+      local ? "http:" : "https:",
+      local,
+      false
+    );
+    const stems = endpoint(
+      env.STEM_WS_URL ?? (local ? "ws://127.0.0.1:8788" : ""),
+      "STEM_WS_URL",
+      local ? "ws:" : "wss:",
+      local,
+      true
+    );
+    const delay = env.STEM_DELAY_SECONDS === void 0 ? local ? 2.8 : 4.5 : Number(env.STEM_DELAY_SECONDS);
+    if (!Number.isFinite(delay) || delay < 2.8 || delay > 8 || Math.round(delay * 10) / 10 !== delay) {
+      throw new Error("STEM_DELAY_SECONDS must be 2.8 to 8.0 seconds in tenths.");
+    }
+    return {
+      mode,
+      apiBaseUrl: api.origin,
+      stemWsUrl: stems.origin + (stems.pathname === "/" ? "" : stems.pathname),
+      stemDelaySeconds: delay
+    };
+  }
+  var deployment = typeof define_MOODSHIFT_DEPLOYMENT_default === "undefined" ? deploymentFromEnv("development", {}) : define_MOODSHIFT_DEPLOYMENT_default;
+
+  // extension/src/api-client.ts
+  var demoCodeKey = "moodshiftDemoAccessCode";
+  async function cloudDemoCode(config = deployment) {
+    if (config.mode !== "production") return;
+    const code = (await chrome.storage.local.get(demoCodeKey))[demoCodeKey];
+    if (typeof code !== "string" || !demoCodePattern.test(code)) {
+      throw new Error("Enter the private demo access code in MoodShift settings.");
+    }
+    return code;
+  }
+  async function apiRequest(path, body, signal, config = deployment) {
+    const code = await cloudDemoCode(config);
+    const url = new URL(path, config.apiBaseUrl);
+    if (code && url.protocol !== "https:") throw new Error("Private demo codes require HTTPS.");
+    const headers = { "Content-Type": "application/json" };
+    if (code) headers.Authorization = `Bearer ${code}`;
+    return fetch(url.href, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+      credentials: "omit",
+      redirect: "error"
+    });
+  }
+
   // extension/src/personalization-panel.ts
   var storageKey = "moodshiftPersonalization";
   function parseSettings(value) {
@@ -942,12 +1021,7 @@
     async function remote(action) {
       const latest = await updateSettings();
       if (action.action === "remember" && !latest.enabled) throw new Error("Enable personalization to remember a preference.");
-      const response = await fetch("http://127.0.0.1:8787/api/memory", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...action, installationId: latest.installationId }),
-        signal: AbortSignal.timeout(6500)
-      });
+      const response = await apiRequest("/api/memory", { ...action, installationId: latest.installationId }, AbortSignal.timeout(6500));
       const result = await response.json();
       if (!response.ok) {
         throw new Error(typeof result?.error === "string" ? result.error.slice(0, 240) : "Supermemory could not complete the request.");
@@ -1069,9 +1143,6 @@
     return result;
   }
 
-  // extension/src/shared/stem-pcm.ts
-  var stemDelaySeconds = 2.8;
-
   // extension/src/sidepanel.ts
   var statusLabel = document.querySelector("#status");
   var chords = mountChords(document.querySelector("#chords"));
@@ -1104,6 +1175,30 @@
       feedback.textContent = "Personalization changed. Submit the prompt again.";
     }
   });
+  if (deployment.mode === "production") {
+    document.querySelector("#cloud-settings").hidden = false;
+    document.querySelector("#cloud-stem-note").hidden = false;
+    const settings = document.querySelector("#cloud-code-form");
+    const field = document.querySelector("#cloud-code");
+    const result = document.querySelector("#cloud-code-status");
+    settings.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const code = field.value.trim();
+      if (code && !demoCodePattern.test(code)) {
+        result.textContent = "Enter a 32\u2013128 character code using letters, numbers, hyphens, or underscores.";
+        return;
+      }
+      try {
+        if (code) await chrome.storage.local.set({ [demoCodeKey]: code });
+        else await chrome.storage.local.remove(demoCodeKey);
+        cancelInterpretation();
+        field.value = "";
+        result.textContent = code ? "Private demo code saved." : "Private demo code cleared.";
+      } catch {
+        result.textContent = "Could not update the private demo code.";
+      }
+    });
+  }
   function updateApply() {
     applyButton.disabled = status.phase !== "capturing" || stopping || commandPending || interpretation !== void 0 || Object.keys(queuedEdits).length > 0 || !promptInput.value.trim();
     savedPresets.setCaptureReady(status.phase === "capturing" && !stopping && !commandPending && !interpretation && !Object.keys(queuedEdits).length && status.stem.phase !== "loading" && status.stem.phase !== "buffering");
@@ -1218,10 +1313,10 @@
         stemLabel.textContent = "Connecting to the local model\u2026";
         break;
       case "buffering":
-        stemLabel.textContent = "Buffering stem audio\u2026";
+        stemLabel.textContent = `Buffering stem audio \xB7 ${deployment.stemDelaySeconds} s delay\u2026`;
         break;
       case "active":
-        stemLabel.textContent = next.phase === "capturing" && next.monitor === "original" ? "Original \xB7 Live mix. Modified resumes the delayed stem." : `Active \xB7 Audio trails video by about ${stemDelaySeconds} s.`;
+        stemLabel.textContent = next.phase === "capturing" && next.monitor === "original" ? "Original \xB7 Live mix. Modified resumes the delayed stem." : `Active \xB7 Audio trails video by about ${deployment.stemDelaySeconds} s.`;
         break;
       case "unavailable":
         stemLabel.textContent = `Unavailable \xB7 ${stem.message}`;
@@ -1379,17 +1474,12 @@
     feedback.textContent = "Interpreting\u2026";
     const deadline = setTimeout(() => request.controller.abort(), 15e3);
     try {
-      const response = await fetch("http://127.0.0.1:8787/api/interpret", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          currentEffects: effects,
-          audioFeatures: session.muted || outputPaused ? silentFeatures : features,
-          personalization: personalization.context()
-        }),
-        signal: request.controller.signal
-      });
+      const response = await apiRequest("/api/interpret", {
+        prompt,
+        currentEffects: effects,
+        audioFeatures: session.muted || outputPaused ? silentFeatures : features,
+        personalization: personalization.context()
+      }, request.controller.signal);
       const body = await response.json();
       if (interpretation?.id !== request.id) return;
       if (!response.ok) {
@@ -1421,7 +1511,7 @@
       if (request.controller.signal.aborted) {
         feedback.textContent = "Error \xB7 Gemini timed out. Try again.";
       } else if (error instanceof TypeError || error instanceof GeminiUnavailable) {
-        const detail = error instanceof GeminiUnavailable ? error.message : "Start the local proxy with npm run dev:server.";
+        const detail = error instanceof GeminiUnavailable ? error.message : deployment.mode === "development" ? "Start the local proxy with npm run dev:server." : "Check the configured cloud API connection.";
         feedback.textContent = `Offline \xB7 Gemini unavailable. Presets and manual controls still work. ${detail}`;
       } else {
         feedback.textContent = `Error \xB7 ${error instanceof Error ? error.message : "Invalid Gemini reply."}`;
