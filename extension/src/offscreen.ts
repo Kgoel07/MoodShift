@@ -1,6 +1,9 @@
 import { AudioEngine } from './audio-engine';
 import { AudioFeaturesMeter } from './audio-features';
 import { StemStream } from './stem-stream';
+import { LiveChordAnalyzer } from './live-chord-analysis';
+import { liveChordPort, type LiveChordSample } from './shared/chords';
+import { audioTiming } from './playout-timing';
 import { applyPatch, neutralEffects, type AudioEffectState } from './shared/effects';
 import { meterChannel, statusChanged, type AudioMessage, type MeterUpdate, type Reply } from './shared/messages';
 import { silentFeatures, type AudioFeatures, type CaptureSession, type CaptureStatus, type MonitorMode, type StemStatus } from './shared/types';
@@ -18,6 +21,7 @@ interface LiveCapture {
   stem: StemStatus;
   stemStream?: StemStream;
   stemRequest: number;
+  chords?: { analyzer: LiveChordAnalyzer; ports: Set<chrome.runtime.Port>; disconnect: () => void };
 }
 
 let live: LiveCapture | undefined;
@@ -25,21 +29,50 @@ let problem: string | undefined;
 let pending: Promise<void> = Promise.resolve();
 const meterUpdates = new BroadcastChannel(meterChannel);
 
+function removeChordPort(capture: LiveCapture, port: chrome.runtime.Port): void {
+  const chords = capture.chords;
+  if (!chords) return;
+  chords.ports.delete(port);
+  if (chords.ports.size) return;
+  capture.chords = undefined;
+  chords.disconnect();
+}
+
+chrome.runtime.onConnect.addListener(port => {
+  const capture = live;
+  if (!capture?.engine || port.name !== liveChordPort + capture.session.id
+    || port.sender?.url !== chrome.runtime.getURL('sidepanel.html')) return;
+  if (!capture.chords) {
+    const analyzer = new LiveChordAnalyzer(capture.context);
+    capture.chords = { analyzer, ports: new Set(), disconnect: capture.engine.tapInput(analyzer.node) };
+  }
+  capture.chords.ports.add(port);
+  port.onDisconnect.addListener(() => removeChordPort(capture, port));
+});
+
+function playout(capture: LiveCapture) {
+  const { context, monitor, stem, stemStream } = capture;
+  return audioTiming(monitor, stem.phase, context.state === 'running', context.baseLatency, context.outputLatency, stemStream?.playoutDelay);
+}
+
 function read(): CaptureStatus {
   if (live) {
     const { session, effects, revision, monitor, features, context, stem } = live;
-    return { phase: 'capturing', session, effects, revision, monitor, features, stem, outputPaused: context.state !== 'running' };
+    return { phase: 'capturing', session, effects, revision, monitor, features, stem, outputPaused: context.state !== 'running', audioTiming: playout(live) };
   }
   return problem ? { phase: 'error', message: problem } : { phase: 'ready' };
 }
 
 async function stop(sessionId: string, error?: string): Promise<void> {
   if (live?.session.id !== sessionId) return;
-  const { engine, stream, context, timer, stemStream } = live;
+  const { engine, stream, context, timer, stemStream, chords } = live;
+  live.chords = undefined;
   live = undefined;
   problem = error;
   clearInterval(timer);
   stemStream?.close();
+  chords?.disconnect();
+  chords?.ports.forEach(port => port.disconnect());
   engine?.disconnect();
   stream.getTracks().forEach(track => track.stop());
   if (context.state !== 'closed') await context.close();
@@ -117,7 +150,17 @@ async function start(session: CaptureSession, streamId: string): Promise<void> {
     const meter = new AudioFeaturesMeter(live.engine.analyser, context.sampleRate);
     capture.timer = setInterval(() => {
       capture.features = context.state === 'running' ? meter.sample() : silentFeatures;
-      meterUpdates.postMessage({ sessionId: session.id, features: capture.features } satisfies MeterUpdate);
+      const timing = playout(capture);
+      meterUpdates.postMessage({ sessionId: session.id, features: capture.features, audioTiming: timing } satisfies MeterUpdate);
+      if (capture.chords) {
+        const { analyzer, ports } = capture.chords;
+        const chord = analyzer.sample(context.state === 'running' && !capture.session.muted && !capture.features.isSilent);
+        const capturedAt = (performance.timeOrigin + performance.now()) / 1000 - analyzer.windowCenter;
+        for (const port of ports) {
+          try { port.postMessage({ chord, capturedAt, outputDelay: timing.seconds } satisfies LiveChordSample); }
+          catch { removeChordPort(capture, port); port.disconnect(); }
+        }
+      }
     }, 250);
   } catch (error) {
     stream?.getTracks().forEach(track => track.stop());

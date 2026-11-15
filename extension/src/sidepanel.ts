@@ -8,14 +8,24 @@ import { mountPanelTabs } from './panel-tabs';
 import { explicitPreference } from './shared/preferences';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
 import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
-import { deployment, demoCodePattern, usesCloudStems } from './shared/deployment';
-import { apiErrorDetail, apiRequest, demoCodeKey } from './api-client';
+import { usesCloudStems } from './shared/deployment';
+import { apiFeedback, apiRequest, DemoAccessRequired } from './api-client';
 
 mountPanelTabs();
 
+const logoPath = chrome.runtime.getManifest().icons?.[128];
+if (logoPath) {
+  const logo = new Image(32, 32);
+  logo.className = 'brand-logo';
+  logo.alt = '';
+  logo.addEventListener('load', () => document.querySelector('.brand-mark')?.replaceWith(logo), { once: true });
+  logo.src = chrome.runtime.getURL(logoPath);
+}
+
 const statusLabel = document.querySelector<HTMLParagraphElement>('#status')!;
 const chords = mountChords(document.querySelector<HTMLElement>('#chords')!);
-const lyrics = mountLyrics(document.querySelector<HTMLElement>('#lyrics')!, chords.setPlayback);
+const lyrics = mountLyrics(document.querySelector<HTMLElement>('#lyrics')!,
+  document.querySelector<HTMLElement>('#current-song')!, chords.setPlayback);
 const stopButton = document.querySelector<HTMLButtonElement>('#stop')!;
 const meter = document.querySelector<HTMLMeterElement>('#meter')!;
 const inputStatus = document.querySelector<HTMLParagraphElement>('#input-status')!;
@@ -25,8 +35,6 @@ const presetGroup = document.querySelector<HTMLDivElement>('#presets')!;
 const monitorButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-mode]')];
 const stemButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-stem]')];
 const stemLabel = document.querySelector<HTMLParagraphElement>('#stem-status')!;
-document.querySelector<HTMLElement>('#stem-buffer')!.textContent =
-  `Worker · ${usesCloudStems() ? 'Cloud' : 'This device'} · ${deployment.stemDelaySeconds}s playback buffer`;
 const form = document.querySelector<HTMLFormElement>('#interpret')!;
 const promptInput = document.querySelector<HTMLTextAreaElement>('#prompt')!;
 const applyButton = document.querySelector<HTMLButtonElement>('#apply')!;
@@ -47,30 +55,7 @@ const personalization = mountPersonalization(document.querySelector<HTMLElement>
   }
 });
 
-if (deployment.mode === 'production') {
-  document.querySelector<HTMLElement>('#cloud-settings')!.hidden = false;
-  document.querySelector<HTMLElement>('#cloud-stem-note')!.hidden = !usesCloudStems();
-  const settings = document.querySelector<HTMLFormElement>('#cloud-code-form')!;
-  const field = document.querySelector<HTMLInputElement>('#cloud-code')!;
-  const result = document.querySelector<HTMLElement>('#cloud-code-status')!;
-  settings.addEventListener('submit', async event => {
-    event.preventDefault();
-    const code = field.value.trim();
-    if (code && !demoCodePattern.test(code)) {
-      result.textContent = 'Enter a 32–128 character code using letters, numbers, hyphens, or underscores.';
-      return;
-    }
-    try {
-      if (code) await chrome.storage.local.set({ [demoCodeKey]: code });
-      else await chrome.storage.local.remove(demoCodeKey);
-      cancelInterpretation();
-      field.value = '';
-      result.textContent = code ? 'Private demo code saved.' : 'Private demo code cleared.';
-    } catch {
-      result.textContent = 'Could not update the private demo code.';
-    }
-  });
-}
+document.querySelector<HTMLElement>('#cloud-stem-note')!.hidden = !usesCloudStems();
 
 function updateApply(): void {
   applyButton.disabled = status.phase !== 'capturing' || stopping || commandPending
@@ -89,9 +74,16 @@ function cancelInterpretation(): void {
 function renderMeter(features: AudioFeatures): void {
   const capture = status.phase === 'capturing' ? status : undefined;
   meter.value = capture && !capture.session.muted && !capture.outputPaused ? Math.sqrt(features.rms) : 0;
-  inputStatus.textContent = capture?.outputPaused ? 'Audio output paused. Click MoodShift on the source tab to retry.'
-    : capture?.session.muted ? 'Source tab muted.'
-    : capture && features.isSilent ? 'Paused or silent input.' : '';
+  inputStatus.textContent = capture?.outputPaused ? 'Playback paused. Click MoodShift on the playing tab to reconnect.'
+    : capture?.session.muted ? 'This tab is muted.'
+    : capture && features.isSilent ? 'Waiting for audio…' : '';
+}
+
+function stemNotice(detail: string): string {
+  if (/another stem session is active/i.test(detail)) return 'Vocals and Instrumental are busy. Try again shortly.';
+  if (/muted|unmute|audio output paused/i.test(detail)) return 'Resume or unmute the tab and try again.';
+  if (/(?:access|private demo) code/i.test(detail)) return new DemoAccessRequired().message;
+  return 'Could not switch the mix. Try again.';
 }
 
 function displayValue(value: number, unit: string): string {
@@ -182,7 +174,9 @@ function render(next: CaptureStatus): void {
     feedback.textContent = '';
   }
   status = next;
+  chords.setCapture(nextId);
   lyrics.setSource(next.phase === 'capturing' ? next.session : undefined);
+  lyrics.setTiming(next.phase === 'capturing' ? next.audioTiming : undefined);
   updateApply();
   stopButton.disabled = next.phase !== 'capturing' || stopping;
   const enabled = !stopButton.disabled && !presetApplying;
@@ -198,14 +192,14 @@ function render(next: CaptureStatus): void {
     button.setAttribute('aria-pressed', String(button.dataset.stem === (stem?.mode ?? 'full')));
   }
   switch (stem?.phase) {
-    case 'loading': stemLabel.textContent = 'Connecting to the local model…'; break;
-    case 'buffering': stemLabel.textContent = `Buffering stem audio · ${deployment.stemDelaySeconds} s delay…`; break;
+    case 'loading':
+    case 'buffering': stemLabel.textContent = 'Preparing audio…'; break;
     case 'active':
       stemLabel.textContent = next.phase === 'capturing' && next.monitor === 'original'
-        ? 'Original · Live mix. Modified resumes the delayed stem.'
-        : `Active · Audio trails video by about ${deployment.stemDelaySeconds} s.`;
+        ? 'Playing the original mix.'
+        : stem.mode === 'vocals' ? 'Playing vocals.' : 'Playing instrumental.';
       break;
-    case 'unavailable': stemLabel.textContent = `Unavailable · ${stem.message}`; break;
+    case 'unavailable': stemLabel.textContent = `Full mix selected. ${stemNotice(stem.message)}`; break;
     default: stemLabel.textContent = '';
   }
   const effects = next.phase === 'capturing' ? next.effects : neutralEffects;
@@ -219,7 +213,7 @@ function render(next: CaptureStatus): void {
     case 'ready': statusLabel.textContent = 'Ready · Click MoodShift on the tab you want to hear.'; break;
     case 'starting': statusLabel.textContent = `Capturing… · ${next.source.title}`; break;
     case 'capturing': statusLabel.textContent = `Listening to this tab · ${next.session.title}`; break;
-    case 'error': statusLabel.textContent = `Error · ${next.message}`; break;
+    case 'error': statusLabel.textContent = 'Could not connect. Click MoodShift on the playing tab to try again.'; break;
   }
 }
 
@@ -228,7 +222,10 @@ async function readCapture() {
     throw new Error('Wait for the current audio change to finish.');
   }
   const sessionId = status.session.id;
-  const reply = await toWorker({ type: 'GET_STATUS' });
+  const reply = await toWorker({ type: 'GET_STATUS' }).catch(error => {
+    console.warn('MoodShift could not read the active audio session', error);
+    throw new Error('Could not connect. Reopen MoodShift and try again.');
+  });
   if (!reply.ok || reply.status.phase !== 'capturing' || reply.status.session.id !== sessionId
     || status.phase !== 'capturing' || status.session.id !== sessionId || commandPending || stopping
     || interpretation || Object.keys(queuedEdits).length) {
@@ -247,10 +244,15 @@ async function restorePreset(preset: SavedPreset): Promise<string> {
   const current = () => id === commandId;
   try {
     const result = await applySavedPreset(preset, capture, current);
-    if (!current()) throw new Error('Preset application was superseded.');
+    if (!current()) throw new Error('The selected tab changed.');
     refreshId++;
     render(result.status);
-    return result.limitation ? `Effects and monitor applied. Stem unavailable · ${result.limitation}` : `Applied ✓ · ${preset.name}`;
+    if (!result.limitation) return `Applied ✓ · ${preset.name}`;
+    console.warn('MoodShift applied the preset without switching the mix', result.limitation);
+    return `Effects applied. ${stemNotice(result.limitation)}`;
+  } catch (error) {
+    console.warn('MoodShift could not apply the preset', error);
+    throw new Error('Could not apply the preset. Try again.');
   } finally {
     if (current()) {
       presetApplying = false;
@@ -277,7 +279,8 @@ async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, 
       });
       if (id !== commandId) return;
       if (!reply.ok) {
-        feedback.textContent = `Effects updated. Stem unavailable · ${reply.message}`;
+        console.warn('MoodShift could not switch the mix', reply.message);
+        feedback.textContent = `Effects applied. ${stemNotice(reply.message)}`;
         void refresh();
         return;
       }
@@ -291,7 +294,9 @@ async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, 
   } catch (error) {
     if (id !== commandId) return;
     stopping = false;
-    feedback.textContent = `Error · ${error instanceof Error ? error.message : String(error)}`;
+    console.warn('MoodShift audio change failed', error);
+    feedback.textContent = message.type === 'SET_STEM' ? stemNotice(String(error))
+      : message.type === 'STOP' ? 'Could not stop MoodShift. Try again.' : 'Could not change the sound. Try again.';
     void refresh();
   } finally {
     if (id === commandId) {
@@ -305,7 +310,11 @@ async function refresh(): Promise<void> {
   const id = ++refreshId;
   try {
     const reply = await toWorker({ type: 'GET_STATUS' });
-    if (id === refreshId) render(reply.ok ? reply.status : { phase: 'error', message: reply.message });
+    if (id === refreshId) {
+      const next = reply.ok ? reply.status : { phase: 'error' as const, message: reply.message };
+      if (next.phase === 'error') console.warn('MoodShift could not connect', next.message);
+      render(next);
+    }
   } catch {
     if (id === refreshId) render({ phase: 'error', message: 'Reopen MoodShift to reconnect.' });
   }
@@ -329,8 +338,6 @@ promptInput.addEventListener('keydown', event => {
   }
 });
 
-class GeminiUnavailable extends Error {}
-
 form.addEventListener('submit', async event => {
   event.preventDefault();
   const prompt = promptInput.value.trim();
@@ -344,7 +351,7 @@ form.addEventListener('submit', async event => {
   const { session, effects, revision, features, outputPaused } = status;
   const direct = directStemIntent(prompt);
   if (direct === 'unsupported') {
-    feedback.textContent = 'Unsupported · Beat, drum and bass isolation require separate stems.';
+    feedback.textContent = 'MoodShift can isolate vocals or play the instrumental mix.';
     return;
   }
   if (direct) {
@@ -363,15 +370,14 @@ form.addEventListener('submit', async event => {
         ...personalization.context(prompt),
     }, request.controller.signal);
     if (!response.ok) {
-      const detail = await apiErrorDetail(response);
-      if (response.status === 504) throw new Error('Gemini timed out. Try again.');
-      if (response.status >= 500 || response.status === 429) throw new GeminiUnavailable(detail);
-      throw new Error(detail);
+      const message = await apiFeedback(response, 'effects');
+      if (interpretation?.id === request.id) feedback.textContent = message;
+      return;
     }
     const body = await response.json();
     if (interpretation?.id !== request.id) return;
     const result = parseInterpretation(body, effects);
-    const detail = [result.summary, result.unsupported.length ? `Unsupported · ${result.unsupported.join(', ')}` : '']
+    const detail = [result.summary, result.unsupported.length ? `Unavailable · ${result.unsupported.join(', ')}` : '']
       .filter(Boolean).join(' ');
     if (result.mode === 'unsupported') {
       feedback.textContent = detail;
@@ -391,14 +397,12 @@ form.addEventListener('submit', async event => {
     }, detail, result.stemMode);
   } catch (error) {
     if (interpretation?.id !== request.id) return;
-    if (request.controller.signal.aborted) {
-      feedback.textContent = 'Error · Gemini timed out. Try again.';
-    } else if (error instanceof TypeError || error instanceof GeminiUnavailable) {
-      const detail = error instanceof GeminiUnavailable ? error.message : deployment.mode === 'development'
-        ? 'Start the local proxy with npm run dev:server.' : 'Check the configured cloud API connection.';
-      feedback.textContent = `Offline · Gemini unavailable. Presets and manual controls still work. ${detail}`;
-    } else {
-      feedback.textContent = `Error · ${error instanceof Error ? error.message : 'Invalid Gemini reply.'}`;
+    if (error instanceof DemoAccessRequired) feedback.textContent = error.message;
+    else {
+      console.warn('MoodShift could not apply the request', error);
+      feedback.textContent = request.controller.signal.aborted ? 'That took too long. Try again.'
+        : error instanceof TypeError ? 'Gemini unavailable. Presets and manual controls still work.'
+          : 'Could not apply your request. Try rephrasing it.';
     }
   } finally {
     clearTimeout(deadline);
@@ -414,6 +418,7 @@ const meterUpdates = new BroadcastChannel(meterChannel);
 meterUpdates.addEventListener('message', (event: MessageEvent<MeterUpdate>) => {
   if (status.phase === 'capturing' && status.session.id === event.data.sessionId) {
     status.features = event.data.features;
+    lyrics.setTiming(event.data.audioTiming);
     renderMeter(event.data.features);
   }
 });

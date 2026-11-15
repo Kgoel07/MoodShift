@@ -2,11 +2,15 @@ import { demoCodePattern, deployment, localStemWsUrl, usesCloudStems, type Deplo
 
 export const demoCodeKey = 'moodshiftDemoAccessCode';
 
+export class DemoAccessRequired extends Error {
+  constructor() { super('MoodShift could not connect. Check with whoever set up this installation.'); }
+}
+
 export async function cloudDemoCode(config: DeploymentConfig = deployment): Promise<string | undefined> {
   if (config.mode !== 'production') return;
   const code = (await chrome.storage.local.get(demoCodeKey))[demoCodeKey];
   if (typeof code !== 'string' || !demoCodePattern.test(code)) {
-    throw new Error('Enter the private demo access code in MoodShift settings.');
+    throw new DemoAccessRequired();
   }
   return code;
 }
@@ -31,6 +35,21 @@ export async function apiErrorDetail(response: Response, config = deployment): P
     return 'Vercel Deployment Protection blocked the request. Use the production domain where /health works without a Vercel login.';
   }
   return `Cloud API returned HTTP ${response.status}. Check /health on the configured production domain.`;
+}
+
+export async function apiFeedback(response: Response, feature: 'effects' | 'preferences'): Promise<string> {
+  const detail = await apiErrorDetail(response);
+  console.warn('MoodShift request failed', detail);
+  if (response.status === 401 && /access code/i.test(detail)) return new DemoAccessRequired().message;
+  if (response.status === 429) return 'Too many requests. Try again in a moment.';
+  if (response.status === 504) return 'That took too long. Try again.';
+  if (feature === 'preferences') {
+    return response.status === 403 ? 'Supermemory isn’t available here.' : 'Could not update Supermemory. Try again.';
+  }
+  if (response.status >= 500 || response.status === 401 || response.status === 403) {
+    return 'Gemini unavailable. Presets and manual controls still work.';
+  }
+  return 'Could not apply your request. Try rephrasing it.';
 }
 
 export function stemStartMessage(sampleRate: number, sessionId: string, config: DeploymentConfig, code?: string) {

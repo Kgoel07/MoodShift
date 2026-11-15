@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ChordSession, fetchSongle } from '../extension/src/chords-provider';
-import { chordPosition, guitarFrets, normalizeSongle, pianoNotes, type ChordResult } from '../extension/src/shared/chords';
+import { chordPosition, chordPositionAt, guitarFrets, LiveChordTimeline, normalizeSongle, pianoNotes, type ChordResult } from '../extension/src/shared/chords';
+import { estimateChord, LiveChordAnalyzer } from '../extension/src/live-chord-analysis';
 import type { YouTubePlayback } from '../extension/src/shared/lyrics';
 
 const sample = {
@@ -14,6 +15,54 @@ const found = normalizeSongle(sample);
 if (found.kind !== 'found') throw new Error('Invalid test fixture.');
 const playback = (position: number, rate = 1): YouTubePlayback => ({
   videoId: 'PqJNc9KVIZE', song: { title: 'Example', artist: 'Artist', duration: 272 }, position, rate, paused: true,
+});
+
+describe('local chord estimation', () => {
+  const spectrum = (notes: number[], sampleRate = 48000) => {
+    const bins = new Float32Array(8192).fill(-120);
+    for (const midi of notes) {
+      const frequency = 440 * 2 ** ((midi - 69) / 12);
+      const center = frequency * 16_384 / sampleRate;
+      const peak = Math.round(center);
+      for (let bin = peak - 1; bin <= peak + 1; bin++) bins[bin] = -25 - 11 * (bin - center) ** 2;
+    }
+    return bins;
+  };
+
+  it.each([48000, 44100])('finds major and minor triads at %d Hz', sampleRate => {
+    expect(estimateChord(spectrum([48, 52, 55], sampleRate), sampleRate)).toBe('C');
+    expect(estimateChord(spectrum([57, 60, 64], sampleRate), sampleRate)).toBe('Am');
+    expect(estimateChord(spectrum([46, 50, 53], sampleRate), sampleRate)).toBe('Bb');
+    expect(estimateChord(spectrum([], sampleRate), sampleRate)).toBeNull();
+    expect(estimateChord(spectrum([48], sampleRate), sampleRate)).toBeNull();
+    expect(estimateChord(spectrum([48, 51, 52, 55], sampleRate), sampleRate)).toBeNull();
+  });
+
+  it('requires stable evidence and resets when the input goes silent', () => {
+    let frame = spectrum([48, 52, 55]);
+    const node = { frequencyBinCount: frame.length, getFloatFrequencyData: (target: Float32Array) => target.set(frame) };
+    const analyzer = new LiveChordAnalyzer({ sampleRate: 48000, createAnalyser: () => node } as unknown as AudioContext);
+    expect(analyzer.sample(true)).toBeNull();
+    expect(analyzer.sample(true)).toBe('C');
+    frame = spectrum([57, 60, 64]);
+    expect(analyzer.sample(true)).toBe('C');
+    expect(analyzer.sample(true)).toBe('Am');
+    expect(analyzer.sample(false)).toBeNull();
+    expect(analyzer.sample(true)).toBeNull();
+  });
+
+  it('looks up what is audible now in live and stem modes and clears gaps and old captures', () => {
+    const timeline = new LiveChordTimeline();
+    timeline.update({ chord: 'C', capturedAt: 100, outputDelay: 0 });
+    timeline.update({ chord: 'C', capturedAt: 101, outputDelay: 0 });
+    timeline.update({ chord: 'Am', capturedAt: 103, outputDelay: 4 });
+    timeline.update({ chord: null, capturedAt: 105, outputDelay: 4 });
+    expect(chordPositionAt(timeline.events, 104)).toEqual({ current: 1, next: -1 });
+    expect(chordPositionAt(timeline.events, 104 - 4)).toEqual({ current: 0, next: 1 });
+    expect(chordPositionAt(timeline.events, 106)).toEqual({ current: -1, next: -1 });
+    timeline.clear();
+    expect(timeline.events).toEqual([]);
+  });
 });
 
 function deferred<T>() {

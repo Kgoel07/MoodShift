@@ -52,7 +52,7 @@ export function mountSavedPresets(
     select.replaceChildren(new Option(presets.length ? 'Select a saved preset' : 'No saved presets', ''),
       ...presets.map(preset => new Option(preset.name, preset.id)));
     select.value = presets.some(preset => preset.id === preferred) ? preferred : '';
-    notice.textContent = result.skipped ? 'Some stored presets use an invalid or unsupported format.' : '';
+    notice.textContent = result.skipped ? 'Some saved presets could not be loaded.' : '';
     controls();
   }
 

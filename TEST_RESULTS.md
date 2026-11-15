@@ -97,3 +97,24 @@ Cloud-build and deployment preparation checks are recorded in [CLOUD_DEPLOY_STAT
 | Preferences and saved presets in Chrome | PASS (automated) | Local saves, edits, deletions, and opt-out. Preferences, opt-out, and exact audio presets persisted across Chrome restart. Chrome exercised both builds with mocked Gemini and Supermemory. |
 | Active stem in production Chrome with the laptop helper | PASS (automated on retry) | Both stem outputs produced PCM from the local fixture. The active Vocals session survived Home and Advanced navigation on both runs. The first run reported the stem unavailable after pausing. The standalone rerun passed pause/resume, A/B, tab switch, reconnection, and Stop. |
 | Live YouTube listening and live providers on this revision | NOT RUN | In desktop Chrome, open Advanced while playing a YouTube track, try the lyric offset and chord diagrams, and switch tabs while applying a preset and an active stem. On the updated backend, try a broad Gemini prompt with a local preference, then give a conflicting explicit instruction. Check live Supermemory only with a configured private owner or local backend. |
+
+## Cross-player metadata and automatic timing
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Typecheck, both extension builds, and Vitest | PASS (automated) | 114 tests include Spotify, YouTube Music, and SoundCloud metadata fixtures, existing YouTube detection, recording normalization, canceled LRCLIB requests, caption priority, pauses, seeks, rate changes, and changing playout delay. |
+| HTML5 player, Media Session, and page captions | PASS (automated) | Headless Chrome captured a local audio fixture and accessed Media Session in the page world. The same capture survived track changes. Page captions followed paused seeks and cleared at cue end. A manual correction survived side-panel closure and reopening. |
+| YouTube, LRCLIB, and Songle | PASS (automated) | Headless Chrome exercised live synchronized lyrics, live chord diagrams and timeline, pause, seek, rate, shared correction, and in-tab YouTube navigation without a new capture. |
+| Stem delay and switching | PASS (automated) | The production bundle used the laptop worker on a licensed fixture. Both stem modes produced PCM. Original removed the measured stem delay and Modified restored it. Pause, resumption, switching tabs, and reconnecting passed. |
+| Live Spotify playback | NOT RUN | The guest Chrome profile reached the track page and encountered Spotify's sign-in prompt. Metadata extraction passed against a fixture. Verify playback and next-track changes in a signed-in Chrome tab. |
+| Live YouTube Music and SoundCloud, remote worker and speaker calibration | NOT RUN | Verify next-track changes on each player. For remote stems and different audio output devices, listen with correction set to zero and adjust by ear if needed. |
+
+## Live chords on other players
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Typecheck, both extension builds, and Vitest | PASS (automated) | All 120 tests passed. Chord tests include triads at 44.1 and 48 kHz, silence, ambiguous harmony, stable frame confirmation, and delayed playout. |
+| Non-YouTube live chords in Chrome | PASS (automated) | A local HTML5 fixture produced C major and A minor across a seek. The selected diagram stayed pinned while the detected chord changed. Silence cleared the current chord, and switching panel tabs preserved audio capture. |
+| Stem timing with live chords | PASS (automated with a protocol fixture) | Chrome kept showing the chord in the audible Instrumental buffer after a seek and advanced when the new audio reached playout. A separate loopback test worker exercised the real Chrome routing. The existing laptop worker reported an active session during the hardware attempt. |
+| YouTube Songle in Chrome | PASS (automated) | Live timeline, diagrams, pause, seek, playback rate, correction, and Stop passed on the documented YouTube example. |
+| Signed-in Spotify playback and other live players | NOT RUN | Open **Advanced → Chords** on a playing tab and compare detected chords with a familiar track. |

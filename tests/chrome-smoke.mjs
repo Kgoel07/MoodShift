@@ -31,8 +31,58 @@ if (stemPort || (cloudBuild && !localStemsWithCloudApi)) {
   extensionPath = isolatedPath;
 }
 const stemFixture = stemTest && !stemYouTube ? await readFile('.stem-gate/assets/fixture.ogg') : undefined;
+const playerTest = process.env.MOODSHIFT_PLAYER_TEST === '1';
+function captionFixtureAudio() {
+  const rate = 8000;
+  const samples = rate * 16;
+  const wave = Buffer.alloc(44 + 2 * samples);
+  wave.write('RIFF', 0);
+  wave.writeUInt32LE(wave.length - 8, 4);
+  wave.write('WAVEfmt ', 8);
+  wave.writeUInt32LE(16, 16);
+  wave.writeUInt16LE(1, 20);
+  wave.writeUInt16LE(1, 22);
+  wave.writeUInt32LE(rate, 24);
+  wave.writeUInt32LE(rate * 2, 28);
+  wave.writeUInt16LE(2, 32);
+  wave.writeUInt16LE(16, 34);
+  wave.write('data', 36);
+  wave.writeUInt32LE(samples * 2, 40);
+  const frequencies = chords => chords.map(note => 440 * 2 ** ((note - 69) / 12));
+  const cMajor = frequencies([48, 52, 55]);
+  const aMinor = frequencies([57, 60, 64]);
+  for (let i = 0; i < samples; i++) {
+    const chord = i < 6 * rate ? cMajor : aMinor;
+    const value = chord.reduce((sum, hz) => sum + Math.sin(i * hz * 2 * Math.PI / rate), 0);
+    wave.writeInt16LE(Math.round(value * 2500), 44 + 2 * i);
+  }
+  return wave;
+}
+const playerAudio = playerTest ? captionFixtureAudio() : undefined;
 let helper;
 const fixture = createServer((req, res) => {
+  if (req.url === '/player.wav' && playerAudio) {
+    const range = req.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
+    const start = range ? Number(range[1]) : 0;
+    const end = Math.min(playerAudio.length - 1, range?.[2] ? Number(range[2]) : playerAudio.length - 1);
+    const audio = playerAudio.subarray(start, end + 1);
+    res.writeHead(range ? 206 : 200, { 'Content-Type': 'audio/wav', 'Content-Length': audio.length, 'Accept-Ranges': 'bytes',
+      ...(range ? { 'Content-Range': `bytes ${start}-${end}/${playerAudio.length}` } : {}) });
+    res.end(audio);
+    return;
+  }
+  if (req.url === '/player' && playerAudio) {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(`<title>MoodShift media fixture</title><audio controls loop src="/player.wav"></audio><script>
+      const player = document.querySelector('audio');
+      const track = player.addTextTrack('captions', 'Test captions', 'en');
+      track.addCue(new VTTCue(0, 4, 'First fixture caption'));
+      track.addCue(new VTTCue(6, 9, 'Second fixture caption'));
+      track.mode = 'disabled';
+      window.setTestSong = title => { navigator.mediaSession.metadata = new MediaMetadata({ title, artist: 'Fixture Artist' }); };
+    </script>`);
+    return;
+  }
   if (req.url === '/stems.ogg' && stemFixture) {
     res.writeHead(200, { 'Content-Type': 'audio/ogg' });
     res.end(stemFixture);
@@ -204,11 +254,8 @@ try {
       assert.equal(await evaluate(view, "document.querySelector('#cloud-stem-note').hidden"), localStemsWithCloudApi);
       assert.ok(!manifest.host_permissions.includes('http://127.0.0.1/*'));
       await selectPanel('advanced');
-      await evaluate(view, `document.querySelector('#cloud-settings').open = true;
-        document.querySelector('#cloud-code').value = ${JSON.stringify(smokeCode)};
-        document.querySelector('#cloud-code-form').requestSubmit()`);
-      await until(() => evaluate(view, "document.querySelector('#cloud-code-status').textContent"),
-        status => status === 'Private demo code saved.', 'Code saved through production UI');
+      assert.equal(await evaluate(view, "document.querySelector('#cloud-settings, #supermemory-settings') === null"), true);
+      await evaluate(view, `chrome.storage.local.set({ moodshiftDemoAccessCode: ${JSON.stringify(smokeCode)} })`);
       const offscreen = await find(t => t.url === origin + '/offscreen.html', 'offscreen document');
       const audio = await attach(offscreen.targetId);
       assert.equal(await evaluate(audio, 'typeof chrome.storage'), 'undefined');
@@ -281,14 +328,15 @@ try {
       await evaluate(view, "window.unmockedFetch = window.fetch.bind(window); window.fetch = () => Promise.reject(new TypeError('Simulated proxy outage'));");
       await submit();
       await wait(400);
-      assert.match(await getFeedback(), /Offline.*Gemini unavailable/);
+      assert.match(await getFeedback(), /Gemini unavailable/);
+      assert.doesNotMatch(await getFeedback(), /proxy|npm run|cloud API/i);
       assert.equal((await evaluate(sw, read)).status.effects.bassDb, 3.5);
 
       await evaluate(view, "window.respond = result => Promise.resolve(Response.json(result)); window.fetch = () => respond({mode:'unsupported',patch:{},summary:'Playback speed is unavailable.',unsupported:['Slow playback']})");
       const revision = (await evaluate(sw, read)).status.revision;
       await submit();
       await wait(200);
-      assert.match(await getFeedback(), /Unsupported/);
+      assert.match(await getFeedback(), /Unavailable/);
       assert.doesNotMatch(await getFeedback(), /Applied/);
       assert.equal((await evaluate(sw, read)).status.revision, revision);
 
@@ -317,7 +365,6 @@ try {
     }
     if (process.env.MOODSHIFT_MEMORY_TEST) {
       const status = () => evaluate(view, "document.querySelector('#memory-status').textContent");
-      const remoteStatus = () => evaluate(view, "document.querySelector('#memory-remote-status').textContent");
       const feedback = () => evaluate(view, "document.querySelector('#feedback').textContent");
       const submit = prompt => evaluate(view, `(() => {
         const field = document.querySelector('#prompt');
@@ -328,23 +375,12 @@ try {
       const memory = id => evaluate(view, `document.querySelector('#memory-${id}').click()`);
       await selectPanel('advanced');
       await evaluate(view, `document.querySelector('#personalization').open = true;
-        document.querySelector('#supermemory-settings').open = true;
         window.memoryCalls = [];
-        window.preferenceList = [];
         window.fetch = async (url, options) => {
+          if (!url.endsWith('/api/interpret')) throw new Error('Unexpected remote preference request');
           const data = JSON.parse(options.body);
           window.memoryCalls.push(data);
-          if (url.endsWith('/api/interpret')) {
-            return Response.json({ mode: 'patch', patch: { bassDb: data.personalization ? -5 : -6 }, summary: 'Reduced bass.', unsupported: [] });
-          }
-          if (data.action === 'remember') {
-            window.preferenceList.push(data.preference);
-            return Response.json({ remembered: true, processing: false });
-          }
-          if (data.action === 'view') return Response.json({ preferences: window.preferenceList });
-          if (!window.allowClear) return Response.json({ error: 'Supermemory did not confirm deletion.' }, { status: 502 });
-          window.preferenceList = [];
-          return Response.json({ cleared: true });
+          return Response.json({ mode: 'patch', patch: { bassDb: data.localPreferences ? -6 : -5 }, summary: 'Reduced bass.', unsupported: [] });
         }`);
       assert.equal(await evaluate(view, "document.querySelector('#memory-enabled').checked"), false);
       await memory('enabled');
@@ -366,7 +402,7 @@ try {
       await selectPanel('home');
       await submit('Remove all bass.');
       await until(feedback, text => text.startsWith('Applied ✓'), 'Personalized Gemini ACK');
-      let calls = await evaluate(view, 'window.memoryCalls');
+      const calls = await evaluate(view, 'window.memoryCalls');
       assert.equal(calls.length, 1);
       assert.equal(calls[0].personalization, undefined);
       assert.deepEqual(calls[0].localPreferences, ['I like warmer bass.']);
@@ -374,21 +410,6 @@ try {
       await selectPanel('advanced');
       await evaluate(view, "document.querySelector('#memory-local-list li button:nth-child(2)').click()");
       await until(status, text => text === 'Local preference deleted.', 'Delete local preference');
-      await memory('remote-enabled');
-      await until(remoteStatus, text => text.startsWith('Supermemory enabled'), 'Opt in to Supermemory');
-      await fill('remote-', 'I like moderate reverb.');
-      await until(remoteStatus, text => text === 'Preference saved to Supermemory.', 'Explicit Supermemory save');
-      await memory('view');
-      await until(remoteStatus, text => text === 'Preferences from Supermemory.', 'Remote preferences view');
-      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 1);
-      await selectPanel('home');
-      await submit('Remove all bass.');
-      await until(feedback, text => text.startsWith('Applied ✓'), 'Gemini with both preferences sources');
-      calls = await evaluate(view, 'window.memoryCalls');
-      assert.deepEqual(calls.map(call => call.action ?? 'interpret'), ['interpret', 'remember', 'view', 'interpret']);
-      assert.equal(calls[3].personalization.installationId, calls[1].installationId);
-      assert.deepEqual(calls[3].localPreferences, ['I like warmer bass.']);
-      await selectPanel('advanced');
       await memory('enabled');
       await until(status, text => text.startsWith('Personalization disabled.'), 'Local personalization disable');
       await selectPanel('home');
@@ -396,16 +417,9 @@ try {
       await until(feedback, text => text.startsWith('Applied ✓'), 'Ordinary Gemini ACK');
       assert.equal(await evaluate(view, "!('personalization' in window.memoryCalls.at(-1)) && !('localPreferences' in window.memoryCalls.at(-1))"), true);
       await selectPanel('advanced');
-      await memory('clear');
-      await until(remoteStatus, text => text === 'Supermemory did not confirm deletion.', 'Remote failure keeps list');
-      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 1);
-      await evaluate(view, 'window.allowClear = true');
-      await memory('clear');
-      await until(remoteStatus, text => text === 'Supermemory confirmed remote preferences were cleared.', 'Remote clear ACK');
-      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 0);
       assert.equal(await evaluate(view, "document.querySelector('#memory-local-list').children.length"), 1);
       await selectPanel('home');
-      console.log('Local preference CRUD, Gemini context and opt-out, plus separate Supermemory save/view/clear passed.');
+      console.log('Local preference CRUD, Gemini context and opt-out passed.');
     }
     const beforeClose = (await evaluate(sw, read)).status;
     await selectPanel('advanced');
@@ -460,6 +474,88 @@ try {
   await until(async () => (await evaluate(sw, 'chrome.tabCapture.getCapturedTabs()'))
     .find(tab => tab.tabId === current.session.tabId)?.status, state => state === 'stopped', 'Tab capture released');
   console.log('Local tone, DSP controls, tab switching and Stop checks passed.');
+  if (playerTest) {
+    const playerUrl = url + '/player';
+    const { targetId: tab } = await send('Target.createTarget', { url: playerUrl, forTab: true });
+    const page = await attach((await find(t => t.url === playerUrl, 'HTML5 player')).targetId);
+    await until(() => evaluate(page, "document.querySelector('audio')?.readyState"), n => n >= 2, 'HTML5 audio loaded');
+    assert.equal(await evaluate(page, "document.querySelector('audio').duration"), 16);
+    await evaluate(page, "document.querySelector('audio').play()");
+    await send('Extensions.triggerAction', { id, targetId: tab });
+    const capture = await until(async () => (await evaluate(sw, read).catch(() => undefined))?.status,
+      state => state?.phase === 'capturing' && state.session.title === 'MoodShift media fixture'
+        && state.features.rms > 0.03, 'HTML5 fixture captured');
+    const getView = async () => attach((await find(t => t.url === origin + '/sidepanel.html', 'HTML5 side panel')).targetId);
+    let view = await getView();
+    const query = selector => evaluate(view, `document.querySelector(${JSON.stringify(selector)})?.textContent`);
+    await evaluate(page, "document.querySelector('audio').pause(); document.querySelector('audio').currentTime = 1");
+    await until(async () => ({ caption: await query('#lyrics-viewport'), status: await query('#lyrics-status'),
+      source: await evaluate(page, `({ bridge: window.moodshiftMediaSessionBridge, position: document.querySelector('audio').currentTime,
+        duration: String(document.querySelector('audio').duration),
+        mode: document.querySelector('audio').textTracks[0].mode, cues: document.querySelector('audio').textTracks[0].cues?.length })`) }),
+    result => result.caption === 'First fixture caption', 'Caption fallback without lyrics');
+    assert.match(await query('#lyrics-status'), /Page captions/);
+    assert.equal(await evaluate(page, "document.querySelector('audio').textTracks[0].mode"), 'hidden');
+    const panelCopy = await evaluate(view, 'document.querySelector("main").textContent');
+    assert.doesNotMatch(panelCopy, /other ways to identify|1\.2\s*s\s*timing|playback buffer|transcription engine/i);
+    assert.equal(await evaluate(view, 'document.querySelector("#lyrics-sync, #lyrics-source, #stem-buffer") === null'), true);
+    await evaluate(page, "document.querySelector('audio').currentTime = 5");
+    await until(() => query('#lyrics-viewport'), text => text === 'Second fixture caption', 'Caption changes after paused seek');
+    await evaluate(page, "document.querySelector('audio').currentTime = 10");
+    await until(() => query('#lyrics-viewport'), text => text === '', 'Caption clears at cue end');
+    assert.equal(await evaluate(page, 'window.moodshiftMediaSessionBridge'), true);
+    await evaluate(page, "setTestSong('Fixture Track A (Official Audio)')");
+    await until(() => query('#current-song'), text => text === 'Fixture Track A · Fixture Artist', 'Main-world Media Session');
+    await evaluate(page, "setTestSong('Fixture Track B (Live)')");
+    await until(() => query('#current-song'), text => text === 'Fixture Track B (Live) · Fixture Artist', 'Automatic track change');
+    assert.equal((await evaluate(sw, read)).status.session.id, capture.session.id);
+    const windowId = await evaluate(sw, `chrome.tabs.get(${capture.session.tabId}).then(tab => tab.windowId)`);
+    await evaluate(view, `const control = document.querySelector('#lyrics-offset');
+      control.value = '0.5'; control.dispatchEvent(new Event('change'))`);
+    await until(() => evaluate(view, "chrome.storage.local.get('lyricsManualCorrectionV2').then(x => x.lyricsManualCorrectionV2)"),
+      value => value === 0.5, 'Manual correction stored');
+    await evaluate(sw, `chrome.sidePanel.close({windowId:${windowId}})`);
+    await until(async () => (await send('Target.getTargets')).targetInfos.some(t => t.url === origin + '/sidepanel.html'),
+      present => !present, 'Player panel closed');
+    await send('Extensions.triggerAction', { id, targetId: tab });
+    view = await getView();
+    await until(() => evaluate(view, "document.querySelector('#lyrics-offset')?.value"), value => value === '0.5', 'Correction restored');
+    assert.equal((await evaluate(sw, read)).status.session.id, capture.session.id);
+    await evaluate(view, "document.querySelector('#advanced-tab').click(); document.querySelector('#chords').open = true");
+    await evaluate(page, "document.querySelector('audio').currentTime = 1; document.querySelector('audio').play()");
+    await until(() => query('#chord-current'), chord => chord === 'C', 'Live C major on the non-YouTube tab');
+    assert.match(await query('#chords-status'), /Live chord estimates/);
+    assert.equal(await query('#chord-next'), '—');
+    await evaluate(view, "document.querySelector('#chord-progression button[aria-current=true]').click()");
+    await evaluate(page, "document.querySelector('audio').currentTime = 8");
+    await until(() => query('#chord-current'), chord => chord === 'Am', 'Live A minor after seek');
+    assert.equal(await query('#chord-diagrams h3'), 'C');
+    await evaluate(view, "document.querySelector('#chord-progression button[aria-pressed=true]').click()");
+    assert.equal(await query('#chord-diagrams h3'), 'Am');
+    assert.equal(await evaluate(view, "!!document.querySelector('#chord-diagrams .chord-piano')"), true);
+    assert.match(await query('#chord-progression'), /C.*Am/);
+    await evaluate(page, "document.querySelector('audio').pause()");
+    await until(() => query('#chord-current'), chord => chord === '—', 'Live chord clears on silence');
+    if (stemTest && localStemsWithCloudApi) {
+      await evaluate(page, "document.querySelector('audio').currentTime = 1; document.querySelector('audio').play()");
+      await until(() => query('#chord-current'), chord => chord === 'C', 'Live chord resumed before stem selection');
+      await evaluate(view, "document.querySelector('#advanced-stems').open = true; document.querySelector('[data-stem=instrumental]').click()");
+      await until(async () => (await evaluate(sw, read)).status.stem,
+        stem => stem?.phase === 'active' && stem.mode === 'instrumental', 'Instrumental active with live chords', 52);
+      await evaluate(page, "document.querySelector('audio').currentTime = 8");
+      await wait(400);
+      assert.equal(await query('#chord-current'), 'C', 'Live chord follows the older buffered audio after seek');
+      await until(() => query('#chord-current'), chord => chord === 'Am', 'Live chord advances when the stem reaches the new audio', 40);
+      await evaluate(view, "document.querySelector('[data-stem=full]').click()");
+      await until(async () => (await evaluate(sw, read)).status.stem?.mode, mode => mode === 'full', 'Returned to full mix');
+      console.log('Live chords followed the measured Instrumental buffer across a seek.');
+    }
+    await evaluate(view, "document.querySelector('#home-tab').click()");
+    assert.equal((await evaluate(sw, read)).status.session.id, capture.session.id);
+    await evaluate(view, "document.querySelector('#stop').click()");
+    await until(async () => (await evaluate(sw, read)).status?.phase, phase => phase === 'ready', 'Player capture stopped');
+    console.log('HTML5 playback, Media Session, timed captions, saved correction and live C/Am estimates passed.');
+  }
   if (process.env.MOODSHIFT_CHORDS_TEST) {
     const songUrl = 'https://www.youtube.com/watch?v=PqJNc9KVIZE';
     const { targetId: songTab } = await send('Target.createTarget', { url: songUrl, forTab: true });
@@ -473,7 +569,7 @@ try {
     await evaluate(song, "document.querySelector('#movie_player video').play().catch(() => undefined)");
     await send('Extensions.triggerAction', { id, targetId: songTab });
     const chordsPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'chords side panel')).targetId);
-    const openChords = () => evaluate(chordsPanel, "document.querySelector('#chords').open = true");
+    const openChords = () => evaluate(chordsPanel, "document.querySelector('#advanced-tab').click(); document.querySelector('#chords').open = true");
     const readChords = () => evaluate(chordsPanel, `({
       status: document.querySelector('#chords-status').textContent,
       current: document.querySelector('#chord-current').textContent,
@@ -493,19 +589,20 @@ try {
       const input = document.querySelector('#lyrics-offset'); input.value = ${JSON.stringify(String(offset))};
       input.dispatchEvent(new Event('change'));
     })()`);
+    await setOffset(1.2);
     await seek(13.5);
     await until(readChords, value => value.current === 'Eb' && value.next === 'Eb/Ab' && value.keyboard && value.guitar, 'Diagrams and next chord');
     await seek(17);
     await until(readChords, value => value.current === 'Eb/Ab', 'Forward chord seek');
     await seek(16, 2);
-    await setOffset(1);
+    await setOffset(2.2);
     await until(readChords, value => value.current === 'Eb', 'Rate-adjusted chord offset');
-    await setOffset(0);
+    await setOffset(1.2);
     await seek(13.5);
     await until(readChords, value => value.current === 'Eb', 'Backward chord seek');
     assert.ok(await evaluate(chordsPanel, "chrome.storage.local.get('songleChordCacheV1').then(values => values.songleChordCacheV1?.PqJNc9KVIZE?.result?.events.length > 20)"));
     await evaluate(chordsPanel, "document.querySelector('#stop').click()");
-    await until(readChords, value => value.status.startsWith('Select a YouTube'), 'Chord status cleared after Stop');
+    await until(readChords, value => value.status.startsWith('Select a playing tab'), 'Chord status cleared after Stop');
     console.log('Live Songle timeline, diagrams, pause/seek, playback rate, shared offset, cache and Stop passed on its documented YouTube example.');
   }
   if (process.env.MOODSHIFT_LYRICS_TEST) {
@@ -666,6 +763,8 @@ try {
     })()`);
     await submit('just play instrumental');
     await until(stemState, stem => stem.phase === 'active' && stem.mode === 'instrumental', 'Instrumental did not activate');
+    const stemTiming = (await evaluate(sw, read)).status.audioTiming;
+    assert.ok(stemTiming.stemSeconds >= 2.79 && stemTiming.seconds >= stemTiming.stemSeconds);
     const powers = await until(() => evaluate(audio, `window.stemMeters?.map(analyser => {
       const samples = new Float32Array(analyser.fftSize);
       analyser.getFloatTimeDomainData(samples);
@@ -684,11 +783,15 @@ try {
     assert.deepEqual(afterTabs.stem, beforeTabs.stem);
     console.log('Active Vocals stem and capture survived Home and Advanced navigation.');
     await click('Original');
-    assert.match(await until(() => evaluate(panelView, "document.querySelector('#stem-status').textContent"),
-      value => value.includes('Live mix'), 'Original bypass label'), /delayed stem/);
+    await until(() => evaluate(panelView, "document.querySelector('#stem-status').textContent"),
+      value => value === 'Playing the original mix.', 'Original bypass label');
+    await until(async () => (await evaluate(sw, read)).status.audioTiming?.stemSeconds,
+      seconds => seconds === 0, 'Original removes only the stem delay');
     await click('Modified');
+    await until(async () => (await evaluate(sw, read)).status.audioTiming?.stemSeconds,
+      seconds => seconds === stemTiming.stemSeconds, 'Modified restores measured stem delay');
     await submit('just play the beat');
-    assert.match(await until(feedback, value => value.includes('Unsupported'), 'Beat-only response'), /Unsupported/);
+    await until(feedback, value => value === 'MoodShift can isolate vocals or play the instrumental mix.', 'Beat-only response');
     assert.equal((await stemState()).mode, 'vocals');
     const realGemini = Boolean(process.env.MOODSHIFT_STEM_GEMINI);
     if (realGemini) {

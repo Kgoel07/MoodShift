@@ -1,15 +1,19 @@
 import { LyricsSession } from './lyrics-session';
-import { activeLyric, validSong, youtubePlaybackPort, type LyricLine, type LyricsRequest,
-  type LyricsResult, type YouTubePlayback } from './shared/lyrics';
-import type { CaptureSession } from './shared/types';
+import { activeLyric, playbackKey, validSong, youtubePlaybackPort, type LyricLine, type LyricsCancel, type LyricsRequest,
+  type LyricsResult, type PlayerPlayback } from './shared/lyrics';
+import type { AudioTiming, CaptureSession } from './shared/types';
+import { installMediaSessionBridge } from './media-session-bridge';
+import { calibratedLyricsPosition, clampLyricsCorrection, PlaybackTimeline, restoreLyricsCorrection } from './playout-timing';
+import { canUseCaptions, currentCaptions } from './player-captions';
 
-const offsetKey = 'lyricsOffset';
+const offsetKey = 'lyricsManualCorrectionV2';
+const previousOffsetKey = 'lyricsManualCorrection';
 const correctionKey = 'lyricsCorrections';
 type Correction = { title: string; artist: string };
+const now = () => performance.timeOrigin + performance.now();
 
-const formatOffset = (value: number) => Math.max(-10, Math.min(10, Number.isFinite(value) ? value : 0));
-
-export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePlayback | null, offset: number) => void) {
+export function mountLyrics(root: HTMLElement, summary: HTMLElement,
+  onPlayback: (playback: PlayerPlayback | null, offset: number) => void) {
   const form = root.querySelector<HTMLFormElement>('#lyrics-search')!;
   const title = root.querySelector<HTMLInputElement>('#lyrics-title')!;
   const artist = root.querySelector<HTMLInputElement>('#lyrics-artist')!;
@@ -19,9 +23,11 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
   const follow = root.querySelector<HTMLInputElement>('#lyrics-follow')!;
   const offset = root.querySelector<HTMLInputElement>('#lyrics-offset')!;
   const session = new LyricsSession();
+  const timeline = new PlaybackTimeline();
 
   let source: CaptureSession | undefined;
   let connection: chrome.runtime.Port | undefined;
+  let connecting: string | undefined;
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   let cooldownTimer: ReturnType<typeof setTimeout> | undefined;
   let edited = false;
@@ -30,6 +36,9 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
   let lines: LyricLine[] = [];
   let lineElements: HTMLParagraphElement[] = [];
   let active = -1;
+  let timing: AudioTiming | undefined;
+  let captionFallback: string | undefined;
+  let activeLookup: string | undefined;
 
   function refreshControls(): void {
     form.hidden = session.playback === null;
@@ -37,12 +46,25 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
   }
 
   function clearLyrics(): void {
+    if (captionFallback) requestCaptions(false);
+    captionFallback = undefined;
     active = -1;
     lines = [];
     lineElements = [];
     viewport.replaceChildren();
     viewport.hidden = true;
+    viewport.setAttribute('aria-label', 'Song lyrics');
     follow.disabled = true;
+  }
+
+  function requestCaptions(enabled: boolean): void {
+    try { connection?.postMessage({ type: 'captions', enabled }); } catch { /* The player navigated. */ }
+  }
+
+  function cancelLookup(): void {
+    if (!activeLookup) return;
+    void chrome.runtime.sendMessage({ target: 'lyrics', cancel: activeLookup } satisfies LyricsCancel).catch(() => undefined);
+    activeLookup = undefined;
   }
 
   function centerActive(): void {
@@ -56,14 +78,37 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
 
   function highlight(): void {
     const playback = session.playback;
-    onPlayback(playback, formatOffset(offset.valueAsNumber));
-    if (!playback || !lines.length) return;
-    const index = activeLyric(lines, playback, formatOffset(offset.valueAsNumber));
+    const correction = clampLyricsCorrection(offset.valueAsNumber);
+    if (!playback) {
+      onPlayback(null, 0);
+      return;
+    }
+    const automatic = timing?.seconds ?? 0;
+    const basePosition = timeline.position(playback, now(), automatic);
+    const aligned = { ...playback, position: calibratedLyricsPosition(playback, basePosition, correction) };
+    onPlayback(aligned, 0);
+    if (captionFallback) {
+      const caption = currentCaptions(playback.captions ?? [], aligned.position);
+      const available = !!playback.captions?.length;
+      const captionStatus = available ? 'Page captions' : captionFallback;
+      if (status.textContent !== captionStatus) status.textContent = captionStatus;
+      viewport.setAttribute('aria-label', 'Page captions');
+      if (viewport.textContent !== caption) viewport.textContent = caption;
+      viewport.hidden = !caption;
+    }
+    if (!lines.length) return;
+    const index = activeLyric(lines, aligned, 0);
     if (index === active) return;
     lineElements[active]?.removeAttribute('aria-current');
     active = index;
     if (lines[index]?.text) lineElements[index].setAttribute('aria-current', 'true');
     centerActive();
+  }
+
+  function showIdentity(playback?: PlayerPlayback | null): void {
+    const identified = !!playback?.song.title && !!playback.song.artist;
+    summary.textContent = identified ? `${playback!.song.title} · ${playback!.song.artist}` : '';
+    summary.hidden = !identified;
   }
 
   function show(result: LyricsResult): void {
@@ -91,66 +136,79 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
         viewport.hidden = false;
         break;
       }
-      case 'instrumental': status.textContent = 'LRCLIB lists this recording as instrumental.'; break;
-      case 'invalid': status.textContent = 'Check the song title and artist. A finite video duration is needed.'; break;
-      case 'missing': status.textContent = 'No matching lyrics. Check the song title and artist and try again.'; break;
-      case 'ambiguous': status.textContent = 'Multiple recordings matched. Check the title and artist.'; break;
-      case 'error': status.textContent = 'Could not reach LRCLIB or read its reply. Try again shortly.'; break;
+      case 'instrumental': status.textContent = 'This track is listed as instrumental.'; break;
+      case 'invalid': status.textContent = 'Lyrics unavailable · Enter the title and artist to search.'; break;
+      case 'missing': status.textContent = 'Lyrics unavailable · No matching recording found.'; break;
+      case 'error': status.textContent = 'Could not load lyrics. Try again shortly.'; break;
       case 'limited': {
         allowSearchAt = result.retryAt;
-        const seconds = Math.max(1, Math.ceil((allowSearchAt - Date.now()) / 1000));
-        const notice = 'LRCLIB asks us to wait. Try again in ' + seconds + ' s.';
+        const wait = Math.max(1000, Math.ceil(allowSearchAt - Date.now()));
+        const notice = 'Please wait a moment before searching again.';
         status.textContent = notice;
         clearTimeout(cooldownTimer);
         cooldownTimer = setTimeout(() => {
           if (status.textContent === notice && Date.now() >= allowSearchAt) status.textContent = 'You can retry the lyric search.';
           refreshControls();
-        }, Math.min(2_147_483_647, seconds * 1000));
+        }, Math.min(2_147_483_647, wait));
         break;
       }
+    }
+    if (canUseCaptions(result)) {
+      captionFallback = status.textContent;
+      requestCaptions(true);
+      highlight();
     }
     refreshControls();
   }
 
   async function find(revision: number, retry: boolean): Promise<void> {
     if (!session.acceptsLookup(revision)) return;
-    const query = { title: title.value.trim(), artist: artist.value.trim(), duration: session.playback!.song.duration };
+    cancelLookup();
+    const { album, duration } = session.playback!.song;
+    const query = { title: title.value.trim(), artist: artist.value.trim(), duration, album: edited ? undefined : album };
     if (!validSong(query)) {
       show({ kind: 'invalid' });
       return;
     }
     clearLyrics();
     status.textContent = 'Finding lyrics…';
+    const requestId = activeLookup = crypto.randomUUID();
     try {
       const result: LyricsResult = await chrome.runtime.sendMessage({
-        target: 'lyrics', query, retry,
+        target: 'lyrics', query, retry, requestId,
       } satisfies LyricsRequest);
       if (session.acceptsLookup(revision)) show(result);
     } catch {
       if (session.acceptsLookup(revision)) show({ kind: 'error' });
+    } finally {
+      if (activeLookup === requestId) activeLookup = undefined;
     }
   }
 
-  function receive(id: string, update: YouTubePlayback | null): void {
-    const previousVideo = session.playback?.videoId;
+  function receive(id: string, update: PlayerPlayback | null): void {
+    const previousTrack = playbackKey(session.playback);
     const outcome = session.receive(id, update);
     if (outcome === 'ignored') return;
-    if (outcome === 'changed') onPlayback(update, formatOffset(offset.valueAsNumber));
+    if (update && !update.ad) timeline.sample(update, now());
+    if (outcome === 'changed') showIdentity(update);
     if (outcome === 'playback' && update) {
       highlight();
       return;
     }
     clearTimeout(searchTimer);
+    cancelLookup();
     clearLyrics();
     refreshControls();
+    highlight();
     if (!update) {
       title.value = '';
       artist.value = '';
-      status.textContent = 'Waiting for a YouTube video on the selected tab…';
+      status.textContent = 'Waiting for a player on the selected tab…';
       return;
     }
 
-    if (previousVideo !== update.videoId) {
+    const track = playbackKey(update)!;
+    if (previousTrack !== track) {
       edited = false;
       editing = false;
     }
@@ -160,7 +218,7 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
       artist.value = update.song.artist.slice(0, 200);
     }
     if (!update.song.duration) {
-      status.textContent = update.ad ? 'Lyrics will resume after the ad.' : 'Waiting for the video to start…';
+      status.textContent = update.ad ? 'Lyrics will resume after the ad.' : 'Lyrics will appear when the track starts.';
       return;
     }
     status.textContent = 'Finding lyrics…';
@@ -169,7 +227,7 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
       try {
         const stored = await chrome.storage.session.get(correctionKey);
         const corrections = stored[correctionKey] as Record<string, Correction> | undefined;
-        const correction = corrections?.[update.videoId];
+        const correction = corrections?.[track];
         if (!session.acceptsLookup(revision)) return;
         if (correction && !edited) {
           title.value = correction.title;
@@ -183,12 +241,20 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
     }, 700);
   }
 
-  function connect(): void {
-    if (!source || connection) return;
+  async function connect(): Promise<void> {
+    if (!source || connection || connecting) return;
     const { id, tabId } = source;
+    connecting = id;
+    const target = { tabId, frameIds: [0] };
+    await Promise.allSettled([
+      chrome.scripting.executeScript({ target, func: installMediaSessionBridge, world: 'MAIN' }),
+      chrome.scripting.executeScript({ target, files: ['youtube-playback.js'] }),
+    ]);
+    if (connecting !== id || source?.id !== id) return;
+    connecting = undefined;
     const port = chrome.tabs.connect(tabId, { name: youtubePlaybackPort, frameId: 0 });
     connection = port;
-    port.onMessage.addListener((update: YouTubePlayback | null) => {
+    port.onMessage.addListener((update: PlayerPlayback | null) => {
       if (connection === port) receive(id, update);
     });
     port.onDisconnect.addListener(() => {
@@ -196,12 +262,12 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
       if (connection !== port) return;
       connection = undefined;
       receive(id, null);
-      if (failed) status.textContent = 'Select a YouTube watch tab. Reload the page if the extension was just installed.';
+      if (failed) status.textContent = 'Click MoodShift on the playing tab to look for lyrics.';
     });
   }
 
   chrome.tabs.onUpdated.addListener((tabId, change) => {
-    if (tabId === source?.tabId && change.status === 'complete') connect();
+    if (tabId === source?.tabId && change.status === 'complete') void connect();
   });
 
   for (const input of [title, artist]) {
@@ -209,6 +275,7 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
       edited = true;
       editing = true;
       clearTimeout(searchTimer);
+      cancelLookup();
       session.invalidateLookup();
       clearLyrics();
       status.textContent = 'Search to apply your song details.';
@@ -226,9 +293,10 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
     if (validSong({ ...correction, duration: playback.song.duration })) {
       edited = true;
       void chrome.storage.session.get(correctionKey).then(values => {
-        const entries = Object.entries(values[correctionKey] ?? {}).filter(([id]) => id !== playback.videoId);
+        const track = playbackKey(playback)!;
+        const entries = Object.entries(values[correctionKey] ?? {}).filter(([id]) => id !== track);
         return chrome.storage.session.set({
-          [correctionKey]: Object.fromEntries([...entries.slice(-11), [playback.videoId, correction]]),
+          [correctionKey]: Object.fromEntries([...entries.slice(-11), [track, correction]]),
         });
       }).catch(() => undefined);
     }
@@ -236,9 +304,9 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
   });
 
   let offsetChanged = false;
-  void chrome.storage.local.get(offsetKey).then(values => {
+  void chrome.storage.local.get([offsetKey, previousOffsetKey]).then(values => {
     if (offsetChanged) return;
-    offset.value = String(formatOffset(Number(values[offsetKey] ?? 0)));
+    offset.value = String(restoreLyricsCorrection(values[offsetKey], values[previousOffsetKey]));
     highlight();
   }).catch(() => undefined);
   offset.addEventListener('input', () => {
@@ -246,7 +314,7 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
     highlight();
   });
   offset.addEventListener('change', () => {
-    const value = formatOffset(offset.valueAsNumber);
+    const value = clampLyricsCorrection(offset.valueAsNumber);
     offset.value = String(value);
     void chrome.storage.local.set({ [offsetKey]: value }).catch(() => undefined);
     highlight();
@@ -260,23 +328,32 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
   });
 
   return {
+    setTiming(next?: AudioTiming): void {
+      if (timing?.seconds === next?.seconds) return;
+      timing = next;
+      highlight();
+    },
     setSource(next?: CaptureSession): void {
       if (next?.id === source?.id) return;
       const old = connection;
       connection = undefined;
+      connecting = undefined;
       old?.disconnect();
       source = next;
       session.setSource(next?.id);
-      onPlayback(null, formatOffset(offset.valueAsNumber));
+      timeline.reset();
+      showIdentity();
+      highlight();
       clearTimeout(searchTimer);
+      cancelLookup();
       clearLyrics();
       title.value = '';
       artist.value = '';
       refreshControls();
       status.textContent = next
-        ? 'Waiting for a YouTube video on the selected tab…'
-        : 'Select a playing YouTube tab with the MoodShift icon.';
-      connect();
+        ? 'Waiting for a player on the selected tab…'
+        : 'Select a playing tab with the MoodShift icon.';
+      void connect();
     },
   };
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { apiErrorDetail, apiRequest, demoCodeKey, stemStartMessage } from '../extension/src/api-client';
+import { apiErrorDetail, apiFeedback, apiRequest, demoCodeKey, stemStartMessage } from '../extension/src/api-client';
 import { deploymentFromEnv, usesCloudStems } from '../extension/src/shared/deployment';
 
 const env = { API_BASE_URL: 'https://moodshift.example.com', STEM_WS_URL: 'wss://stems.example.com/stem' };
@@ -46,7 +46,7 @@ describe('extension deployment settings', () => {
       expect.objectContaining({ headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + code }, redirect: 'error' })]);
     await expect(apiRequest('/api/memory', {}, signal, { ...cloud, apiBaseUrl: local.apiBaseUrl })).rejects.toThrow('HTTPS');
     read.mockResolvedValue({});
-    await expect(apiRequest('/api/interpret', {}, signal, cloud)).rejects.toThrow('access code');
+    await expect(apiRequest('/api/interpret', {}, signal, cloud)).rejects.toThrow('could not connect');
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
@@ -74,5 +74,20 @@ describe('extension deployment settings', () => {
     expect(await apiErrorDetail(demoReply, cloud)).toBe('Enter the private demo access code.');
     expect(await apiErrorDetail(new Response('<html>', { status: 502 }), cloud)).toMatch(/Cloud API returned HTTP 502/);
     expect(await apiErrorDetail(new Response('<html>', { status: 502 }), local)).toMatch(/Check the local proxy/);
+  });
+
+  it('keeps technical API failures in the console and shows plain guidance in the panel', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const failure = Response.json({ error: 'Start the local proxy with npm run dev:server.' }, { status: 503 });
+      expect(await apiFeedback(failure, 'effects')).toBe('Gemini unavailable. Presets and manual controls still work.');
+      expect(warn).toHaveBeenCalledWith('MoodShift request failed', 'Start the local proxy with npm run dev:server.');
+      const unauthorized = Response.json({ error: 'Enter the private demo access code.' }, { status: 401 });
+      expect(await apiFeedback(unauthorized, 'effects')).toBe('MoodShift could not connect. Check with whoever set up this installation.');
+      const shared = Response.json({ error: 'This backend has no owner configured.' }, { status: 403 });
+      expect(await apiFeedback(shared, 'preferences')).toBe('Supermemory isn’t available here.');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

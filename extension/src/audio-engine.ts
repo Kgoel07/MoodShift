@@ -134,6 +134,11 @@ export class AudioEngine {
     this.source.disconnect(capture);
   }
 
+  tapInput(node: AudioNode): () => void {
+    this.source.connect(node);
+    return () => this.source.disconnect(node);
+  }
+
   setStemActive(active: boolean): void {
     if (active === this.activeStem) return;
     this.activeStem = active;

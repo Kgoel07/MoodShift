@@ -4,7 +4,7 @@
   "name": "MoodShift",
   "version": "0.1.0",
   "description": "Live audio effects for the Chrome tab you select.",
-  "permissions": ["activeTab", "tabCapture", "offscreen", "sidePanel", "storage"],
+  "permissions": ["activeTab", "scripting", "tabCapture", "offscreen", "sidePanel", "storage"],
   "host_permissions": ["http://127.0.0.1/*", "https://lrclib.net/*", "https://widget.songle.jp/*"],
   "content_scripts": [
     { "matches": ["https://www.youtube.com/*"], "js": ["youtube-playback.js"], "run_at": "document_start" }

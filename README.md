@@ -13,25 +13,29 @@ MoodShift applies live EQ, filters, reverb, echo, and distortion to one selected
 
 Open the panel from Chrome’s side panel menu to inspect the existing session. Use the toolbar icon on a different source tab to switch capture. **Reset** restores neutral values for the current session. Select **Modified** to hear the effects after comparing with Original.
 
-## Synchronized YouTube lyrics
+## Song identification, lyrics and page captions
 
-Build or reload MoodShift, then reload the YouTube watch page so Chrome injects the new content script. Start a song and click the MoodShift icon on that tab. The **Lyrics** section uses the selected player’s position, pause state and playback rate. It follows the active line through seeks and YouTube’s in-tab video changes. Scroll the lyrics at any time and re-enable **Follow playback** to return to the active line.
+Start a song on Spotify Web Player, YouTube Music, YouTube, SoundCloud, or an HTML5 player and click MoodShift on the playing tab. **Home** shows the detected title and artist. **Advanced → Lyrics** shows lyrics or page captions and offers a timing adjustment. Player access is scoped to the selected tab. On other sites, detection depends on explicit music metadata and a readable playback clock. If navigation changes the site, click MoodShift on the new page to grant access again. Embeds in cross-origin frames and players with inaccessible audio or metadata may be unavailable.
 
-Edit **Song Title** and **Artist** and click **Search lyrics** if YouTube identifies the song incorrectly. MoodShift looks for matching title and artist and checks that the recording’s duration is within two seconds. It shows plain lyrics when an otherwise matching record has no timing. Different edits, live performances, and ambiguous results may have no verified match. [LRCLIB API](https://lrclib.net/docs)
+MoodShift follows track changes without restarting capture. It looks for an exact normalized title and artist and a recording within two seconds of the player duration. Remix, cover and live qualifiers stay in the lookup. When several recordings match, MoodShift uses the player's album if available, favors the original edition among similarly timed matches, and picks the best available result even if the provider lacks edition details. Edit **Song Title** and **Artist** and click **Search lyrics** to correct a guess. LRCLIB provides synchronized lyrics first and plain lyrics when timing is unavailable. When LRCLIB has no usable result, MoodShift displays timed **Page captions** if the site's media element exposes text tracks. Songle chords remain available for supported YouTube videos. [LRCLIB API](https://lrclib.net/docs) · [HTML media text tracks](https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/textTracks)
 
-**Lyric offset** starts at `0` and applies to both lyrics and chord highlights. Use a positive value to delay them and a negative value to advance them. With delayed stem playback, try `+2.8` seconds and adjust by ear. Original and Full Mix usually need less offset. The offset persists locally.
+**Auto sync** follows the audible route. Active Instrumental and Vocals use the worklet’s frame distance between capture and playout, plus the Web Audio output delay available on the device. Original, Full Mix, and the live mix during buffering use the output delay alone. Processing and network time are absorbed by the stem buffer. The display advances highlights by 1.2 seconds in every mode as a default calibration. **Timing adjustment** adds a saved adjustment to that baseline. Start at `0`. A positive value delays the highlights and a negative value advances them. An existing `-1.2` second correction is now represented as zero since it is included in the baseline. [Web Audio latency definitions](https://www.w3.org/TR/webaudio/#AudioContext)
 
-Lyrics work without Gemini or the stem helper. MoodShift sends only the song title and artist to LRCLIB. The extension caches recent lookup results and song corrections for the current Chrome session.
+Lyrics work without Gemini or the stem helper. MoodShift sends only the song title and artist to LRCLIB and caches matches and corrected song details for the current Chrome session. Page captions come from the browser's text track. Audio recognition and live transcription are unavailable in this build. Recognition could use a short AudD clip after per-request consent and server-side API configuration. Live transcription requires a separate local service with a timestamped PCM input and measured throughput alongside the stem worker. The standard `whisper-stream` example reads a microphone and would need a tab-PCM adapter. [AudD API and pricing](https://audd.io/pricing/) · [whisper.cpp streaming example](https://github.com/ggml-org/whisper.cpp/blob/master/examples/stream/README.md)
 
 To smoke-test in Chrome, open Jonathan Coulton’s “Code Monkey,” click MoodShift, and wait for **Synchronized lyrics**. Pause and seek, change the playback speed, then open another recommendation in the same tab. If an ad plays, the panel can identify the new song while waiting for the song’s clock. [Official YouTube track](https://www.youtube.com/watch?v=AEBld6I_AKs)
 
-To repeat the automated Chrome check after building, run `$env:MOODSHIFT_LYRICS_TEST='1'; node tests/chrome-smoke.mjs` in PowerShell. Add `$env:MOODSHIFT_LYRICS_STEMS='1'` to test an active stem alongside lyrics with the optional Windows helper.
+To repeat the automated Chrome check after building, run `$env:MOODSHIFT_LYRICS_TEST='1'; node tests/chrome-smoke.mjs` in PowerShell. Use `MOODSHIFT_PLAYER_TEST=1` for the local HTML5, Media Session, and caption fixture. Add `$env:MOODSHIFT_LYRICS_STEMS='1'` to the YouTube test to check an active stem with the optional Windows helper.
 
-## Synchronized YouTube chords
+## Chords
+
+On Spotify Web Player, YouTube Music, SoundCloud, and other captured players, open **Advanced → Chords** to see live major and minor chord estimates. MoodShift analyzes the existing tab audio locally while the section is open. Click a detected chord to inspect its piano diagram and a guitar fingering where available. Live estimates wait for clear harmony and show a next chord only if it has already been detected in buffered audio. The display follows the audible stem delay when a stem is active. Complex voicings and dense mixes may return sparse or simplified estimates. [Chroma and chord-template reference](https://www.audiolabs-erlangen.de/content/05_fau/professor/00_mueller/04_bookFMP/02_slides/Mueller_FMP_Chapter5.pdf)
+
+### YouTube and Songle
 
 1. Open the YouTube watch page used in the Songle API example, start playback, and click MoodShift on that tab. Open **Chords**. Wait for **Songle · Estimated chords**. [YouTube example](https://www.youtube.com/watch?v=PqJNc9KVIZE)
 2. At about 13.5 seconds, look for **Eb**, then **Eb/Ab** under **Next**. Pause and seek to 17 seconds, then seek backward. Click a chord in the progression to inspect its guitar and piano diagrams. Click it again to follow the current chord. Supported diagrams are based on local tables.
-3. Change the YouTube rate and adjust **Lyric offset (s)** in **Lyrics** to change both highlights. Switch videos or click **Stop processing** to clear the current chord.
+3. Change the YouTube rate and adjust **Timing adjustment (s)** in **Lyrics** to change both highlights. Switch videos or click **Stop processing** to clear the current chord.
 
 MoodShift sends the exact YouTube watch URL to Songle when you open **Chords**. It caches successful results locally for up to seven days and keeps up to 16 videos. Songle covers registered recordings. A missing recording has no progression, and an outage shows a retry control. The integration is for noncommercial use and the original video plays directly from YouTube. [Songle chord API](https://widget.songle.jp/docs/v1?lang=en) · [Songle Widget terms](https://widget.songle.jp/docs/terms-of-use) · [Songle terms](https://api.songle.jp/terms_of_use.pdf)
 
@@ -45,7 +49,7 @@ Saved presets are shared across songs in the same Chrome profile. They use local
 
 ## Side panel and sound preferences
 
-**Home** contains the prompt, quick presets, My Presets, Original/Modified, and stem choices. **Advanced** contains the effect sliders, lyrics, chord diagrams, stem buffer details, personalization, and private demo access. Presets and the stem controls are available in both tabs. Select a tab with the mouse or with the Left and Right arrow keys when the tab has focus. MoodShift remembers the last selected tab in the same Chrome profile.
+**Home** contains the prompt, quick presets, My Presets, Original/Modified, and stem choices. **Advanced** contains the effect sliders, lyrics, chord diagrams, and personalization. Presets and the stem controls are available in both tabs. Select a tab with the mouse or with the Left and Right arrow keys when the tab has focus. MoodShift remembers the last selected tab in the same Chrome profile.
 
 In **Advanced → Personalization**, enter a short sound preference such as “I prefer warm bass and minimal distortion” and choose **Save locally**. Each entry has Edit and Delete controls. During capture, “Remember that I prefer warm bass” in the main prompt also saves locally. Local preferences and saved presets use separate Chrome storage and persist across restarts. Local preferences support up to 30 entries of 240 characters each.
 
@@ -53,7 +57,7 @@ Turn on **Use remembered sound preferences** to let the extension send up to fou
 
 ### Optional Supermemory
 
-The **Supermemory** section has its own opt-in and Save, View, and Clear controls. Configure `SUPERMEMORY_API_KEY` on the local proxy or a private owner deployment. Existing Supermemory settings and installation IDs continue to work. Shared Vercel demos support local personalization. Supermemory writes require explicit use of **Save to Supermemory**. Clear remote preferences waits for provider confirmation and remains available with personalization disabled. [Vercel settings](docs/DEPLOY_VERCEL.md#prepare-the-extension-id-and-credentials) · [Namespace permissions](https://supermemory.ai/docs/concepts/container-tags)
+The Supermemory backend remains available for future use. The side panel uses preferences saved on this device. [Vercel settings](docs/DEPLOY_VERCEL.md#prepare-the-extension-id-and-credentials) · [Namespace permissions](https://supermemory.ai/docs/concepts/container-tags)
 
 ## Optional live stems on Windows
 
@@ -136,4 +140,4 @@ Set `MOODSHIFT_CHORDS_TEST=1` to exercise the live Songle timeline, `MOODSHIFT_P
 
 ## Private cloud demo
 
-The default build still uses the local Gemini/Supermemory proxy and the local stem helper. The production build writes to `extension/dist-cloud` and uses a configured HTTPS API and WSS stem worker. A demo code is entered after installation. [Vercel setup](docs/DEPLOY_VERCEL.md) · [AWS CUDA worker setup](docs/DEPLOY_AWS_GPU.md) · [Cloud smoke test](docs/CLOUD_SMOKE_TEST.md) · [Deployment status](CLOUD_DEPLOY_STATUS.md)
+The default build still uses the local Gemini/Supermemory proxy and the local stem helper. The production build writes to `extension/dist-cloud` and uses a configured HTTPS API and WSS stem worker. See the Vercel setup instructions for provisioning access on a fresh installation. [Vercel setup](docs/DEPLOY_VERCEL.md) · [AWS CUDA worker setup](docs/DEPLOY_AWS_GPU.md) · [Cloud smoke test](docs/CLOUD_SMOKE_TEST.md) · [Deployment status](CLOUD_DEPLOY_STATUS.md)

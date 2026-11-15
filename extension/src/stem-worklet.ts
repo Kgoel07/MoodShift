@@ -31,6 +31,7 @@ class StemAudio extends AudioWorkletProcessor {
   private vocalsEnd = 0;
   private started = false;
   private signaled = false;
+  private nextTimingReport = 0;
   private failed = false;
 
   constructor() {
@@ -112,7 +113,11 @@ class StemAudio extends AudioWorkletProcessor {
       output[3][index] = this.dry[offset + 1] - vocalR;
       if (!this.signaled) {
         this.signaled = true;
-        this.channel?.postMessage({ type: 'active' } satisfies PCMMessage);
+        this.channel?.postMessage({ type: 'active', queuedFrames: position - playback } satisfies PCMMessage);
+        this.nextTimingReport = position + sampleRate;
+      } else if (position >= this.nextTimingReport) {
+        this.port.postMessage({ queuedFrames: position - playback });
+        this.nextTimingReport = position + sampleRate;
       }
     }
     return true;

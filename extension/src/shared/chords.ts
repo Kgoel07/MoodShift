@@ -4,7 +4,30 @@ export interface ChordEvent {
   startTime: number;
   endTime: number;
   chord: string;
-  source: 'songle' | 'manual' | 'ai';
+  source: 'songle' | 'manual' | 'ai' | 'live';
+}
+
+export const liveChordPort = 'moodshift-live-chords:';
+export type LiveChordSample = { chord: string | null; capturedAt: number; outputDelay: number };
+
+export class LiveChordTimeline {
+  events: ChordEvent[] = [];
+  private previous?: string | null;
+
+  clear(): void {
+    this.previous = undefined;
+    this.events = [];
+  }
+
+  update({ chord, capturedAt }: LiveChordSample): void {
+    if (this.previous === chord) return;
+    this.previous = chord;
+    const recent = this.events.slice(-23);
+    const last = recent.at(-1);
+    if (last?.endTime === Infinity) recent[recent.length - 1] = { ...last, endTime: capturedAt };
+    if (chord) recent.push({ startTime: capturedAt, endTime: Infinity, chord, source: 'live' });
+    this.events = recent;
+  }
 }
 
 export type ChordResult =
@@ -39,7 +62,10 @@ export function normalizeSongle(body: unknown): ChordResult {
 
 export function chordPosition(events: readonly ChordEvent[], playback: YouTubePlayback, offset: number) {
   if (playback.ad) return { current: -1, next: -1 };
-  const time = synchronizedPosition(playback, offset);
+  return chordPositionAt(events, synchronizedPosition(playback, offset));
+}
+
+export function chordPositionAt(events: readonly ChordEvent[], time: number) {
   let start = 0;
   let end = events.length;
   while (start < end) {

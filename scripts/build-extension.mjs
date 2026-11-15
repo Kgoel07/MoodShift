@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { parse } from 'dotenv';
@@ -23,6 +23,18 @@ if (!workspacePath || workspacePath.startsWith('..') || isAbsolute(workspacePath
   throw new Error('Choose a build output directory inside the MoodShift project.');
 }
 const manifest = JSON.parse(await readFile(new URL('manifest.json', dir), 'utf8'));
+const logoPath = 'assets/logo.png';
+const logo = await readFile(new URL(logoPath, dir)).catch(error => {
+  if (error.code !== 'ENOENT') throw error;
+});
+if (logo) {
+  await mkdir(resolve(outdir, 'assets'), { recursive: true });
+  await writeFile(resolve(outdir, logoPath), logo);
+  manifest.icons = { ...manifest.icons, 128: logoPath };
+  manifest.action.default_icon = logoPath;
+} else {
+  await rm(resolve(outdir, logoPath), { force: true });
+}
 if (config.mode === 'production') {
   const wsOrigin = new URL(config.stemWsUrl).origin;
   manifest.host_permissions = [
@@ -45,7 +57,7 @@ await build({
   logLevel: 'info',
 });
 await Promise.all([
-  config.mode === 'production'
+  config.mode === 'production' || logo
     ? writeFile(resolve(outdir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
     : copyFile(new URL('manifest.json', dir), resolve(outdir, 'manifest.json')),
   ...['offscreen.html', 'sidepanel.html', 'sidepanel.css'].map(name =>

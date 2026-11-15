@@ -22,10 +22,12 @@ export type CaptureStatus =
       stem: StemStatus;
       features: AudioFeatures;
       outputPaused: boolean;
+      audioTiming?: AudioTiming;
     }
   | { phase: 'error'; message: string };
 
 export type MonitorMode = 'original' | 'modified';
+export type AudioTiming = { seconds: number; stemSeconds: number };
 export const stemModes = ['full', 'instrumental', 'vocals'] as const;
 export type StemMode = typeof stemModes[number];
 export type StemStatus =

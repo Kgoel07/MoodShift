@@ -5,7 +5,7 @@ import { deployment, usesCloudStems } from './shared/deployment';
 import type { StemCodeReply, StemCodeRequest } from './shared/messages';
 
 type Stem = Exclude<StemMode, 'full'>;
-type WorkerEvent = { type: 'buffering' | 'active' } | { type: 'error'; message: string };
+type WorkerEvent = { type: 'buffering' } | { type: 'active'; queuedFrames: number } | { type: 'error'; message: string };
 
 const loaded = new WeakMap<AudioContext, Promise<void>>();
 
@@ -22,6 +22,11 @@ export class StemStream {
   private connected = false;
   private closed = false;
   private timer: ReturnType<typeof setTimeout>;
+  private queuedFrames?: number;
+
+  get playoutDelay(): number {
+    return this.queuedFrames === undefined ? deployment.stemDelaySeconds : this.queuedFrames / this.context.sampleRate;
+  }
 
   constructor(
     private readonly context: AudioContext,
@@ -91,6 +96,7 @@ export class StemStream {
       if (this.closed) return;
       if (data.type === 'buffering') buffering();
       if (data.type === 'active') {
+        this.queuedFrames = data.queuedFrames;
         clearTimeout(this.timer);
         this.resolveReady();
       }
@@ -98,6 +104,9 @@ export class StemStream {
     };
     worker.onerror = () => this.fail('Stem communication failed.');
     node.onprocessorerror = () => this.fail('Chrome stopped the stem audio processor.');
+    node.port.onmessage = ({ data }: MessageEvent<{ queuedFrames: number }>) => {
+      if (!this.closed) this.queuedFrames = data.queuedFrames;
+    };
     node.port.postMessage(channel.port1, [channel.port1]);
     worker.postMessage({
       port: channel.port2, sampleRate: this.context.sampleRate, sessionId: crypto.randomUUID().replaceAll('-', ''),

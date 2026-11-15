@@ -4,7 +4,8 @@ export const stereoFrameBytes = 8;
 
 export type PCMMessage =
   | { type: 'capture' | 'recycle' | 'vocals'; buffer: ArrayBuffer }
-  | { type: 'start' | 'active' }
+  | { type: 'start' }
+  | { type: 'active'; queuedFrames: number }
   | { type: 'error'; message: string };
 
 export interface StemWorkerStart {

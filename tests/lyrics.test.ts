@@ -105,10 +105,20 @@ describe('LRCLIB matching', () => {
     expect(matchLyrics(null, song)).toEqual({ kind: 'error' });
   });
 
-  it('flags equally plausible recordings with conflicting lyrics or timing', () => {
-    expect(matchLyrics([record, { ...record, syncedLyrics: '[00:05] Unrelated words' }], song)).toEqual({ kind: 'ambiguous' });
+  it('uses provider order when identical recording metadata cannot settle a tie', () => {
+    expect(matchLyrics([record, { ...record, syncedLyrics: '[00:05] Unrelated words' }], song))
+      .toEqual({ kind: 'synced', lines: parseLrc(record.syncedLyrics) });
     expect(matchLyrics([record, { ...record, syncedLyrics: '[00:10] First line\n[00:15] Second line' }], song))
-      .toEqual({ kind: 'ambiguous' });
+      .toEqual({ kind: 'synced', lines: parseLrc(record.syncedLyrics) });
+  });
+
+  it('prefers an original edition when durations are close and follows the player album when known', () => {
+    const original = { ...record, albumName: 'First album (Original Release)', duration: 120.3 };
+    const deluxe = { ...record, albumName: 'First album (Deluxe Edition)', syncedLyrics: '[00:06] Deluxe line' };
+    const compilation = { ...record, albumName: 'Greatest Hits', syncedLyrics: '[00:09] Compilation line' };
+    expect(matchLyrics([deluxe, compilation, original], song)).toEqual({ kind: 'synced', lines: parseLrc(record.syncedLyrics) });
+    expect(matchLyrics([original, deluxe, compilation], { ...song, album: 'First Album (Deluxe Edition)' }))
+      .toEqual({ kind: 'synced', lines: parseLrc(deluxe.syncedLyrics) });
   });
 
   it('prefers a distinctly closer duration when releases have different timings', () => {
