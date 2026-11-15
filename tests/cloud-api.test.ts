@@ -58,10 +58,14 @@ describe('cloud API deployment', () => {
   it('exports the production app without binding the local port', async () => {
     for (const [name, value] of Object.entries(deployment)) vi.stubEnv(name, value);
     vi.stubEnv('PORT', '12345');
+    vi.stubEnv('GEMINI_API_KEY', '');
     const { default: app } = await import('../index');
     await serve(app, async base => {
       expect((await fetch(base + '/health')).status).toBe(200);
       expect((await post(base + '/api/interpret', prompt, 'bad')).status).toBe(401);
+      const unavailable = await post(base + '/api/interpret', prompt);
+      expect(unavailable.status).toBe(503);
+      expect(await unavailable.json()).toEqual({ error: 'Gemini is not configured on this cloud backend.' });
       expect((await post(base + '/api/memory', { action: 'view', installationId: owner })).status).toBe(403);
     });
   });

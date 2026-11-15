@@ -357,18 +357,18 @@ try {
     const stale = await evaluate(sw, "chrome.runtime.sendMessage({target:'audio',type:'APPLY_EFFECTS',patch:{bassDb:8},sessionId:" + JSON.stringify(capture.status.session.id) + "})");
     assert.equal(stale.ok, false);
     await send('Target.closeTarget', { targetId: secondPage.targetId });
-    await wait(450);
-    assert.equal((await evaluate(sw, read)).status.phase, 'ready');
+    await until(async () => (await evaluate(sw, read)).status.phase, phase => phase === 'ready', 'Closed source released capture');
     await send('Extensions.triggerAction', { id, targetId });
-    await wait(700);
   }
-  const current = (await evaluate(sw, read)).status;
+  const current = await until(async () => (await evaluate(sw, read)).status,
+    state => state.phase === 'capturing' && state.session.title === 'Test tone', 'Reopened tone capture');
   const panel = await find(t => t.url === origin + '/sidepanel.html', 'side panel');
   const view = await attach(panel.targetId);
+  await until(() => evaluate(view, "!document.querySelector('#stop').disabled"), Boolean, 'Stop is available');
   await evaluate(view, "document.querySelector('#stop').click()");
-  await wait(350);
-  assert.equal((await evaluate(sw, read)).status.phase, 'ready');
-  assert.equal((await evaluate(sw, 'chrome.tabCapture.getCapturedTabs()')).find(tab => tab.tabId === current.session.tabId)?.status, 'stopped');
+  await until(async () => (await evaluate(sw, read)).status.phase, phase => phase === 'ready', 'Stop acknowledged');
+  await until(async () => (await evaluate(sw, 'chrome.tabCapture.getCapturedTabs()'))
+    .find(tab => tab.tabId === current.session.tabId)?.status, state => state === 'stopped', 'Tab capture released');
   console.log('Local tone, DSP controls, tab switching and Stop checks passed.');
   if (process.env.MOODSHIFT_CHORDS_TEST) {
     const songUrl = 'https://www.youtube.com/watch?v=PqJNc9KVIZE';

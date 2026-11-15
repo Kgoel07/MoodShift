@@ -14,7 +14,7 @@ df -h /opt
 apt-get update
 apt-get install -y ca-certificates curl python3.12-venv libsndfile1
 
-getent passwd moodshift-stem >/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin moodshift-stem
+getent passwd moodshift-stem >/dev/null || useradd --system --user-group --no-create-home --shell /usr/sbin/nologin moodshift-stem
 install -d -m 0755 "$target/scripts" "$target/assets"
 install -m 0644 "$root"/scripts/{stem_model.py,stem_protocol.py,stem_helper.py,benchmark_stems.py,stems-requirements-linux.txt} "$target/scripts/"
 python3.12 -m venv "$target/.venv"

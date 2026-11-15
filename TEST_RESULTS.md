@@ -84,3 +84,5 @@ November 14, 2026 · Windows · Node.js 22.20.0 · Chrome 157.0.8103.52
 | Supermemory v5 SDK and Chrome controls | PASS (automated) | SDK calls used mock HTTP responses and verified the namespace, opt-in lookup, distinct scope, write and view, remote deletion acknowledgment, no-key fallback, upstream errors and timeouts. Chrome exercised opt-in/out, both explicit save paths, view and clear. The running proxy returned an actionable HTTP 503 for memory without a key. |
 | Real Supermemory add, profile, and delete | NOT RUN | No `SUPERMEMORY_API_KEY` was available. |
 | Human listening, diagram usability, and timing by ear | NOT RUN | Run the Chrome and stem listening checklists in [README.md](README.md). macOS stems and CPU-only live stems retain the hardware limitations recorded above. |
+
+Cloud-build and deployment preparation checks are recorded in [CLOUD_DEPLOY_STATUS.md](CLOUD_DEPLOY_STATUS.md).

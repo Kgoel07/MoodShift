@@ -15,6 +15,7 @@
 **/*.mp3
 **/*.mp4
 **/*.zip
+*.md
 extension/dist/
 extension/dist-cloud/
 scripts/

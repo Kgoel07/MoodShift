@@ -1010,7 +1010,7 @@
         state.textContent = message;
         return message;
       } catch (error) {
-        const message = error instanceof TypeError ? "Could not reach the local proxy." : error instanceof Error ? error.message : "Could not complete the preference action.";
+        const message = error instanceof TypeError ? deployment.mode === "development" ? "Could not reach the local proxy." : "Could not reach the configured cloud API." : error instanceof Error ? error.message : "Could not complete the preference action.";
         state.textContent = message;
         return message;
       } finally {

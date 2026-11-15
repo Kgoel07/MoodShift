@@ -1,5 +1,6 @@
 import { installationIdPattern, preferenceLimit } from './shared/preferences';
 import { apiRequest } from './api-client';
+import { deployment } from './shared/deployment';
 
 const storageKey = 'moodshiftPersonalization';
 type Settings = { installationId: string; enabled: boolean };
@@ -73,7 +74,8 @@ export function mountPersonalization(root: HTMLElement, onChange: () => void) {
       state.textContent = message;
       return message;
     } catch (error) {
-      const message = error instanceof TypeError ? 'Could not reach the local proxy.'
+      const message = error instanceof TypeError ? (deployment.mode === 'development'
+        ? 'Could not reach the local proxy.' : 'Could not reach the configured cloud API.')
         : error instanceof Error ? error.message : 'Could not complete the preference action.';
       state.textContent = message;
       return message;

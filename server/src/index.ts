@@ -43,6 +43,10 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, me
       res.status(400).json({ error: 'Provide a 1–500 character prompt, all effect values, and bounded audio features.' });
       return;
     }
+    if (policy.mode !== 'local' && !config.apiKey) {
+      res.status(503).json({ error: 'Gemini is not configured on this cloud backend.' });
+      return;
+    }
     const controller = new AbortController();
     res.once('close', () => {
       if (!res.writableEnded) controller.abort();
@@ -59,7 +63,7 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, me
     } catch (error) {
       if (controller.signal.aborted) return;
       if (error instanceof ProxyError) res.status(error.status).json({ error: error.message });
-      else res.status(500).json({ error: 'The local proxy could not interpret the request.' });
+      else res.status(500).json({ error: 'The MoodShift proxy could not interpret the request.' });
     }
   });
 
