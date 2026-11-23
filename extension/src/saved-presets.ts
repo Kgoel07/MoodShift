@@ -1,6 +1,8 @@
 import { clampEffects, effectKeys, type AudioEffectState } from './shared/effects';
 import { toWorker } from './shared/messages';
 import type { CaptureStatus, MonitorMode, StemMode } from './shared/types';
+import { validateReverb, type ReverbSettings } from './shared/reverb';
+import { validateTuning, type TuningSettings } from './shared/tuning';
 
 type Capture = Extract<CaptureStatus, { phase: 'capturing' }>;
 export interface SavedPreset {
@@ -13,6 +15,8 @@ export interface SavedPreset {
   audioSettings: AudioEffectState;
   stemMode: StemMode;
   monitor: MonitorMode;
+  reverb?: ReverbSettings;
+  tuning?: TuningSettings;
 }
 
 export const savedPresetsKey = 'moodshiftSavedPresets';
@@ -43,6 +47,8 @@ export function validatePreset(value: unknown): SavedPreset {
     schemaVersion: 1, id: preset.id, createdAt: preset.createdAt, updatedAt: preset.updatedAt,
     ...details(preset.name, preset.description), audioSettings: clampEffects(preset.audioSettings),
     stemMode: preset.stemMode, monitor: preset.monitor,
+    ...(preset.reverb === undefined ? {} : { reverb: validateReverb(preset.reverb) }),
+    ...(preset.tuning === undefined ? {} : { tuning: validateTuning(preset.tuning) }),
   };
 }
 
@@ -54,7 +60,10 @@ function snapshot(capture: Capture) {
   if (capture.stem.phase === 'loading' || capture.stem.phase === 'buffering') {
     throw new Error('Wait for stem selection to finish before saving.');
   }
-  return { audioSettings: capture.effects, stemMode: capture.stem.mode, monitor: capture.monitor };
+  const reverb = capture.reverb;
+  return { audioSettings: capture.effects, stemMode: capture.stem.mode, monitor: capture.monitor,
+    ...(capture.tuning ? { tuning: capture.tuning } : {}),
+    ...(reverb ? { reverb: { preset: reverb.preset, duration: reverb.duration, lastAmount: reverb.lastAmount } } : {}) };
 }
 
 async function read(): Promise<unknown[]> {
@@ -111,7 +120,10 @@ export async function applySavedPreset(input: SavedPreset, capture: Capture, cur
   };
   const requireCapture = (reply: Awaited<ReturnType<typeof toWorker>>): Capture => {
     assertCurrent();
-    if (!reply.ok) throw new Error(reply.message);
+    if (!reply.ok) {
+      console.warn('MoodShift could not restore saved audio settings', reply.message);
+      throw new Error('Couldn’t apply this preset. Check the playing tab and try again.');
+    }
     if (reply.status.phase !== 'capturing' || reply.status.session.id !== sessionId) {
       throw new Error('The selected tab changed during preset application.');
     }
@@ -119,8 +131,13 @@ export async function applySavedPreset(input: SavedPreset, capture: Capture, cur
   };
   let status = requireCapture(await send({
     type: 'APPLY_EFFECTS', sessionId, patch: preset.audioSettings, baseRevision: capture.revision,
+    ...(preset.reverb ? { reverb: preset.reverb } : {}),
+    ...(preset.tuning ? { tuning: preset.tuning } : {}),
   }));
-  const matches = () => effectKeys.every(key => status.effects[key] === preset.audioSettings[key]);
+  const matches = () => effectKeys.every(key => status.effects[key] === preset.audioSettings[key])
+    && (!preset.tuning || JSON.stringify(status.tuning) === JSON.stringify(preset.tuning))
+    && (!preset.reverb || (status.reverb && status.reverb.preset === preset.reverb.preset
+      && status.reverb.duration === preset.reverb.duration && status.reverb.lastAmount === preset.reverb.lastAmount));
   if (!matches()) throw new Error('Audio settings changed during preset application.');
   let limitation: string | undefined;
   if (status.stem.mode !== preset.stemMode

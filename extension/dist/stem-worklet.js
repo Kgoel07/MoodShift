@@ -1,10 +1,58 @@
 "use strict";
 (() => {
+  // <define:__MOODSHIFT_DEPLOYMENT__>
+  var define_MOODSHIFT_DEPLOYMENT_default = { mode: "development", apiBaseUrl: "http://127.0.0.1:8787", stemWsUrl: "ws://127.0.0.1:8788", stemDelaySeconds: 2.8 };
+
   // extension/src/shared/stem-pcm.ts
   var stemPacketFrames = 2048;
   var stemHeaderBytes = 4;
   var stereoFrameBytes = 8;
-  var stemDelaySeconds = 2.8;
+
+  // extension/src/shared/deployment.ts
+  var localStemWsUrl = "ws://127.0.0.1:8788";
+  var dnsName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+  function endpoint(raw, name, protocol, local, forStems) {
+    const invalid = new Error(`${name} must be a ${protocol} endpoint on ${local ? "127.0.0.1" : "a specific public DNS hostname"}.`);
+    let url;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw invalid;
+    }
+    if (raw !== raw.trim() || !raw.startsWith(protocol + "//") || url.protocol !== protocol || url.username || url.password || /[\s?#\\@]/.test(raw) || url.pathname !== "/" && !(forStems && !local && url.pathname === "/stem")) throw invalid;
+    if (raw !== url.origin && raw !== url.href) throw invalid;
+    if (local) {
+      if (url.hostname !== "127.0.0.1" || (forStems ? Number(url.port) < 1024 : url.port !== "8787")) throw invalid;
+    } else if (url.port || !dnsName.test(url.hostname) || /\.(local|localhost|internal)$/.test(url.hostname)) {
+      throw invalid;
+    }
+    return url;
+  }
+  function deploymentFromEnv(mode, env) {
+    if (mode !== "development" && mode !== "production") throw new Error("Build mode must be development or production.");
+    const local = mode === "development";
+    const api = endpoint(
+      env.API_BASE_URL ?? (local ? "http://127.0.0.1:8787" : ""),
+      "API_BASE_URL",
+      local ? "http:" : "https:",
+      local,
+      false
+    );
+    const stemUrl = env.STEM_WS_URL ?? (local ? localStemWsUrl : "");
+    const localStem = local || stemUrl === localStemWsUrl || stemUrl === localStemWsUrl + "/";
+    const stems = endpoint(stemUrl, "STEM_WS_URL", localStem ? "ws:" : "wss:", localStem, true);
+    const delay = env.STEM_DELAY_SECONDS === void 0 ? local ? 2.8 : 4.5 : Number(env.STEM_DELAY_SECONDS);
+    if (!Number.isFinite(delay) || delay < 2.8 || delay > 8 || Math.round(delay * 10) / 10 !== delay) {
+      throw new Error("STEM_DELAY_SECONDS must be 2.8 to 8.0 seconds in tenths.");
+    }
+    return {
+      mode,
+      apiBaseUrl: api.origin,
+      stemWsUrl: stems.origin + (stems.pathname === "/" ? "" : stems.pathname),
+      stemDelaySeconds: delay
+    };
+  }
+  var deployment = typeof define_MOODSHIFT_DEPLOYMENT_default === "undefined" ? deploymentFromEnv("development", {}) : define_MOODSHIFT_DEPLOYMENT_default;
 
   // extension/src/stem-worklet.ts
   function packetView(buffer) {
@@ -13,8 +61,8 @@
   var StemAudio = class extends AudioWorkletProcessor {
     constructor() {
       super();
-      this.delay = Math.round(sampleRate * stemDelaySeconds);
-      this.capacity = Math.ceil(sampleRate * 4);
+      this.delay = Math.round(sampleRate * deployment.stemDelaySeconds);
+      this.capacity = Math.ceil(sampleRate * Math.max(4, deployment.stemDelaySeconds + 0.25));
       this.dry = new Float32Array(this.capacity * 2);
       this.vocals = new Float32Array(this.capacity * 2);
       this.pool = [];
@@ -98,7 +146,7 @@
         output[3][index] = this.dry[offset + 1] - vocalR;
         if (!this.signaled) {
           this.signaled = true;
-          this.channel?.postMessage({ type: "active" });
+          this.channel?.postMessage({ type: "active", queuedFrames: position - playback });
         }
       }
       return true;

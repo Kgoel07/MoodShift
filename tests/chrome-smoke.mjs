@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { cp, rm, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { rm, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
+import { parse } from 'dotenv';
+import { prepareReverb, checkReverb } from './reverb-browser.mjs';
+import { checkPitchCore, checkTuning, tuningTone } from './tuning-browser.mjs';
+import { checkCommands, commandFixture } from './commands-browser.mjs';
 
 const testDir = resolve('.moodshift-test');
 await mkdir(testDir, { recursive: true });
@@ -11,21 +15,53 @@ const profile = await mkdtemp(resolve(testDir, 'profile-'));
 const stemTest = Boolean(process.env.MOODSHIFT_STEM_TEST);
 const stemYouTube = Boolean(process.env.MOODSHIFT_STEM_YOUTUBE);
 const stemPort = process.env.MOODSHIFT_STEM_TEST_PORT;
-let extensionPath = resolve('extension/dist');
-if (stemPort) {
-  assert.match(stemPort, /^[1-9][0-9]{3,4}$/);
-  assert.ok(Number(stemPort) <= 65535 && !['8787', '8788'].includes(stemPort));
+const localStemsWithCloudApi = process.env.MOODSHIFT_CLOUD_BUILD_TEST === 'loopback';
+const cloudBuild = process.env.MOODSHIFT_CLOUD_BUILD_TEST === '1' || localStemsWithCloudApi;
+const smokeCode = 'cloud-smoke-placeholder-' + 'x'.repeat(32);
+const cloudConfig = cloudBuild ? parse(await readFile(localStemsWithCloudApi ? 'extension/.env.local' : 'extension/.env.example')) : {};
+let extensionPath = resolve(localStemsWithCloudApi ? 'extension/dist-cloud' : 'extension/dist');
+if (stemPort || (cloudBuild && !localStemsWithCloudApi)) {
+  if (stemPort) {
+    assert.match(stemPort, /^[1-9][0-9]{3,4}$/);
+    assert.ok(!cloudBuild && Number(stemPort) <= 65535 && !['8787', '8788'].includes(stemPort));
+  }
   const isolatedPath = resolve(profile, 'isolated-extension');
-  await cp(extensionPath, isolatedPath, { recursive: true });
-  const workerPath = resolve(isolatedPath, 'stem-worker.js');
-  const workerCode = await readFile(workerPath, 'utf8');
-  assert.ok(workerCode.includes('ws://127.0.0.1:8788'));
-  await writeFile(workerPath, workerCode.replace('ws://127.0.0.1:8788', 'ws://127.0.0.1:' + stemPort));
+  const env = { ...process.env, STEM_WS_URL: stemPort ? 'ws://127.0.0.1:' + stemPort : 'wss://stems.example.com/stem',
+    API_BASE_URL: cloudBuild ? 'https://api.example.com' : 'http://127.0.0.1:8787' };
+  execFileSync(process.execPath, ['--import', 'tsx', 'scripts/build-extension.mjs',
+    '--mode', cloudBuild ? 'production' : 'development', '--outdir', isolatedPath,
+    ...(cloudBuild ? ['--env-file', 'extension/.env.example'] : [])], { stdio: 'inherit', env });
   extensionPath = isolatedPath;
 }
 const stemFixture = stemTest && !stemYouTube ? await readFile('.stem-gate/assets/fixture.ogg') : undefined;
+const reverb = process.env.MOODSHIFT_REVERB_TEST ? await prepareReverb() : undefined;
+const tuning = process.env.MOODSHIFT_TUNING_TEST ? tuningTone() : undefined;
+const commands = process.env.MOODSHIFT_COMMAND_TEST ? commandFixture() : undefined;
 let helper;
 const fixture = createServer((req, res) => {
+  if (commands && commands(req, res)) return;
+  if (tuning && req.url === '/tuning') {
+    res.setHeader('Content-Type', 'text/html');
+    res.end('<title>Stereo tuning fixture</title><audio controls loop src="/tuning.wav"></audio>'); return;
+  }
+  if (tuning && req.url === '/tuning.wav') {
+    res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': tuning.length });
+    res.end(tuning); return;
+  }
+  if (reverb && req.url === '/reverb') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end('<title>Reverb local audio</title><audio controls loop src="/reverb-audio"></audio><script src="/reverb-dsp.js"></script>'); return;
+  }
+  if (reverb && req.url === '/reverb-dsp.js') { res.writeHead(200, { 'Content-Type': 'text/javascript' }); res.end(reverb.dsp); return; }
+  if (reverb && req.url === '/reverb-audio') {
+    const range = req.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
+    const start = range ? Number(range[1]) : 0;
+    const end = Math.min(reverb.audio.length - 1, range?.[2] ? Number(range[2]) : reverb.audio.length - 1);
+    const audio = reverb.audio.subarray(start, end + 1);
+    res.writeHead(range ? 206 : 200, { 'Content-Type': reverb.mime, 'Content-Length': audio.length, 'Accept-Ranges': 'bytes',
+      ...(range ? { 'Content-Range': `bytes ${start}-${end}/${reverb.audio.length}` } : {}) });
+    res.end(audio); return;
+  }
   if (req.url === '/stems.ogg' && stemFixture) {
     res.writeHead(200, { 'Content-Type': 'audio/ogg' });
     res.end(stemFixture);
@@ -45,8 +81,10 @@ let lastId = 0;
 let data = '';
 const requests = new Map();
 function launchChrome() {
+  const voiceFixture = process.env.MOODSHIFT_TEST_VOICE_WAV;
   const processHandle = spawn(process.env.MOODSHIFT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', [
     '--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
+    ...(voiceFixture ? ['--use-fake-device-for-media-stream', '--use-file-for-fake-audio-capture=' + resolve(voiceFixture)] : []),
     '--user-data-dir=' + profile,
     '--remote-debugging-pipe', '--enable-unsafe-extension-debugging', 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true });
@@ -105,9 +143,18 @@ async function attach(targetId) {
   return (await send('Target.attachToTarget', { targetId, flatten: true })).sessionId;
 }
 async function evaluate(session, expression) {
-  const { result, exceptionDetails } = await send('Runtime.evaluate', {
-    expression, awaitPromise: true, returnByValue: true, userGesture: true,
-  }, session);
+  const params = { expression, awaitPromise: true, returnByValue: true, userGesture: true };
+  let evaluation;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      evaluation = await send('Runtime.evaluate', params, session);
+      break;
+    } catch (error) {
+      if (!error.message.includes('Cannot find default execution context') || attempt === 19) throw error;
+      await wait(150);
+    }
+  }
+  const { result, exceptionDetails } = evaluation;
   if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
   return result.value;
 }
@@ -123,17 +170,20 @@ async function until(read, accept, label, attempts = 24) {
 }
 
 async function startStemHelper(extensionId) {
-  const args = stemPort
+  const args = process.env.MOODSHIFT_REVERB_STEMS ? ['tests/reverb_stem_fixture.py', '--port', stemPort] : stemPort
     ? ['-c', 'import sys; from scripts import stem_helper as helper; helper.PORT = int(sys.argv.pop(1)); helper.main()', stemPort]
     : ['-m', 'scripts.stem_helper'];
   helper = spawn(process.env.MOODSHIFT_STEM_PYTHON ?? '.stem-gate/venv/Scripts/python.exe',
-    [...args, '--extension-id', extensionId, '--device', process.env.MOODSHIFT_STEM_DEVICE ?? '1'],
+    [...args, '--extension-id', extensionId, ...(process.env.MOODSHIFT_REVERB_STEMS ? [] : ['--device', process.env.MOODSHIFT_STEM_DEVICE ?? '1'])],
     { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let helperLog = '';
   helper.stdout.on('data', data => { helperLog += data.toString(); });
   helper.stderr.on('data', data => { helperLog += data.toString(); });
   helper.on('error', error => { helperLog += error.message; });
-  await until(() => helperLog, log => log.includes('helper ready'), 'Stem helper startup', 80);
+  await until(() => {
+    if (helper.exitCode !== null) throw new Error('Stem helper exited during startup: ' + helperLog);
+    return helperLog;
+  }, log => log.includes('helper ready'), 'Stem helper startup', 180);
 }
 
 async function stopStemHelper() {
@@ -154,6 +204,7 @@ try {
   console.log((await send('Browser.getVersion')).product);
   const { id } = await send('Extensions.loadUnpacked', { path: extensionPath });
   const origin = 'chrome-extension://' + id;
+  if (process.env.MOODSHIFT_TUNING_TEST) await checkPitchCore({ send, attach, evaluate, until, origin });
   const worker = await find(t => t.type === 'service_worker' && t.url.startsWith(origin), 'worker');
   let sw = await attach(worker.targetId);
   const { targetId } = await send('Target.createTarget', { url, forTab: true });
@@ -174,41 +225,102 @@ try {
     assert.ok(capture.status.features.rms > 0.03, 'local tone reached the real analyser');
     const panel = await find(t => t.url === origin + '/sidepanel.html', 'side panel');
     const view = await attach(panel.targetId);
-    const click = name => evaluate(view, `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)}).click()`);
+    const selectPanel = name => evaluate(view, `document.querySelector('#${name}-tab').click()`);
+    assert.equal(await evaluate(view, "document.querySelector('#settings-panel').hidden"), true);
+    if (cloudBuild) {
+      const manifest = await evaluate(view, 'chrome.runtime.getManifest()');
+      const stemOrigin = new URL(cloudConfig.STEM_WS_URL).origin;
+      assert.ok(manifest.host_permissions.includes(new URL(cloudConfig.API_BASE_URL).origin + '/*'));
+      assert.ok(manifest.host_permissions.includes(stemOrigin + '/*'));
+      assert.equal(stemOrigin === 'ws://127.0.0.1:8788', localStemsWithCloudApi);
+      assert.equal(await evaluate(view, "document.querySelector('#cloud-stem-note').hidden"), localStemsWithCloudApi);
+      assert.ok(!manifest.host_permissions.includes('http://127.0.0.1/*'));
+      await selectPanel('settings');
+      assert.equal(await evaluate(view, "Boolean(document.querySelector('#cloud-settings'))"), false);
+      // Operator provisioning replaced the visible form. Use only the test credential.
+      await evaluate(view, `chrome.storage.local.set({moodshiftDemoAccessCode: ${JSON.stringify(smokeCode)}})`);
+      const offscreen = await find(t => t.url === origin + '/offscreen.html', 'offscreen document');
+      const audio = await attach(offscreen.targetId);
+      assert.equal(await evaluate(audio, 'typeof chrome.storage'), 'undefined');
+      const requestCode = "chrome.runtime.sendMessage({target:'worker',type:'GET_STEM_CODE'})";
+      assert.equal((await evaluate(view, requestCode)).ok, false);
+      const stemCode = await evaluate(audio, requestCode);
+      assert.equal(stemCode.ok, !localStemsWithCloudApi);
+      if (!localStemsWithCloudApi) assert.equal(stemCode.code, smokeCode);
+      console.log(localStemsWithCloudApi ? `Loopback stem build loaded as extension ${id}.` : 'Offscreen cloud authentication passed through the service worker.');
+      await selectPanel('home');
+    }
+    const click = name => evaluate(view, `[...document.querySelectorAll('button')].find(b => (b.dataset.audioPreset ?? b.textContent) === ${JSON.stringify(name)}).click()`);
+    assert.equal(await evaluate(view, "document.querySelector('#presets').children.length"), 4);
     await click('Dreamy');
     await wait(400);
     assert.match(await evaluate(view, "document.querySelector('#feedback').textContent"), /Applied/);
     const afterDreamy = await evaluate(sw, read);
     assert.equal(afterDreamy.status.effects?.reverbMix, 0.33);
+    assert.deepEqual(await evaluate(view, "Array.from(document.querySelectorAll('#presets [aria-pressed=true]'), button => button.dataset.audioPreset)"), ['Dreamy']);
+    await evaluate(view, `window.stemControls = document.querySelector('#stem-controls');
+      document.querySelector('#home-tab').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));`);
+    assert.equal(await evaluate(view, `document.activeElement.id === 'settings-tab'
+      && document.querySelector('#home-panel').hidden && !document.querySelector('#settings-panel').hidden
+      && document.querySelector('#settings-stems').contains(window.stemControls)`), true);
+    const afterNavigation = (await evaluate(sw, read)).status;
+    assert.equal(afterNavigation.session.id, afterDreamy.status.session.id);
+    assert.equal(afterNavigation.revision, afterDreamy.status.revision);
+    assert.deepEqual(afterNavigation.stem, afterDreamy.status.stem);
+    assert.ok(afterNavigation.features.rms > 0.03);
+    assert.equal(await evaluate(view, "Number(document.querySelector('#effect-reverbMix').value)"), 0.33);
+    await selectPanel('home');
+    await click('Warm');
+    await until(async () => (await evaluate(sw, read)).status.effects.bassDb, value => value === 2, 'Home Warm preset');
+    await click('Dreamy');
+    await until(async () => (await evaluate(sw, read)).status.effects.bassDb, value => value === 0, 'Home preset');
     await click('Original');
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.monitor, 'original');
     if (process.env.MOODSHIFT_PRESETS_TEST) {
+      await selectPanel('settings');
       await evaluate(view, `document.querySelector('#saved-presets').open = true;
         const name = document.querySelector('#saved-preset-name');
         name.value = 'Restart preset'; name.dispatchEvent(new Event('input'));
         document.querySelector('#saved-preset-save').click()`);
       await until(() => evaluate(view, "document.querySelector('#saved-preset-status').textContent"),
         status => status === 'Preset saved.', 'Saving exact preset');
+      await selectPanel('home');
     }
     await click('Modified');
+    await selectPanel('settings');
+    await evaluate(view, "document.querySelector('#effect-settings').open = true");
     await click('Reset');
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.effects.reverbMix, 0);
+    await selectPanel('settings');
     await evaluate(view, "const slider = document.querySelector('#effect-bassDb'); slider.value = '3.5'; slider.dispatchEvent(new Event('input')); slider.dispatchEvent(new Event('change'))");
     await wait(350);
     assert.equal((await evaluate(sw, read)).status.effects.bassDb, 3.5);
+    assert.equal(await evaluate(view, "document.querySelector('#effect-bassDb').style.getPropertyValue('--fill')"), '77.5%');
     assert.ok(await evaluate(view, 'document.documentElement.scrollWidth <= innerWidth'));
+    await selectPanel('home');
     if (await evaluate(view, "Boolean(document.querySelector('#interpret'))")) {
       const getFeedback = () => evaluate(view, "document.querySelector('#feedback').textContent");
       const submit = () => evaluate(view, "(() => { const field = document.querySelector('#prompt'); field.value = 'A little more bass'; field.dispatchEvent(new Event('input')); document.querySelector('#interpret').requestSubmit(); })()");
+      if (cloudBuild) {
+        await evaluate(view, `window.fetch = (url, init) => {
+          window.cloudRequest = { url: String(url), authorization: init.headers.Authorization, redirect: init.redirect };
+          return Promise.resolve(Response.json({ actions:[], summary:'Unsupported', unsupported:['test'] }));
+        }`);
+        await submit();
+        await until(getFeedback, text => text.includes('Unsupported'), 'Production API request completed');
+        assert.deepEqual(await evaluate(view, 'window.cloudRequest'),
+          { url: new URL('/api/interpret/v2', cloudConfig.API_BASE_URL).href, authorization: 'Bearer ' + smokeCode, redirect: 'error' });
+        console.log('Production extension loaded with exact host permissions and sent demo authentication only to its configured HTTPS API.');
+      }
       await evaluate(view, "window.unmockedFetch = window.fetch.bind(window); window.fetch = () => Promise.reject(new TypeError('Simulated proxy outage'));");
       await submit();
       await wait(400);
-      assert.match(await getFeedback(), /Offline.*Gemini unavailable/);
+      assert.match(await getFeedback(), /Gemini unavailable/);
       assert.equal((await evaluate(sw, read)).status.effects.bassDb, 3.5);
 
-      await evaluate(view, "window.respond = result => Promise.resolve(Response.json(result)); window.fetch = () => respond({mode:'unsupported',patch:{},summary:'Playback speed is unavailable.',unsupported:['Slow playback']})");
+      await evaluate(view, "window.respond = result => Promise.resolve(Response.json(result)); window.fetch = () => respond({actions:[],summary:'Playback speed is unavailable.',unsupported:['Slow playback']})");
       const revision = (await evaluate(sw, read)).status.revision;
       await submit();
       await wait(200);
@@ -216,22 +328,28 @@ try {
       assert.doesNotMatch(await getFeedback(), /Applied/);
       assert.equal((await evaluate(sw, read)).status.revision, revision);
 
-      await evaluate(view, "window.fetch = () => respond({mode:'patch',patch:{bassDb:5},summary:'More bass.',unsupported:[]})");
+      await evaluate(view, "window.fetch = url => url.endsWith('/v2') ? Promise.resolve(new Response(null,{status:404})) : respond({mode:'patch',patch:{bassDb:5},summary:'More bass.',unsupported:[]})");
       await submit();
       await wait(300);
       assert.match(await getFeedback(), /^Applied ✓/);
       assert.equal((await evaluate(sw, read)).status.effects.bassDb, 5);
 
-      await evaluate(view, "window.fetch = () => new Promise(resolve => { window.releaseReply = () => resolve(Response.json({mode:'patch',patch:{bassDb:8},summary:'More bass.',unsupported:[]})); })");
+      await evaluate(view, "window.fetch = () => new Promise(resolve => { window.releaseReply = () => resolve(Response.json({actions:[{control:'bassDb',operation:'set',value:8}],summary:'More bass.',unsupported:[]})); })");
       await submit();
       assert.match(await getFeedback(), /Interpreting/);
+      const beforeSwitch = (await evaluate(sw, read)).status;
+      await selectPanel('settings');
+      assert.match(await getFeedback(), /Interpreting/);
+      assert.equal((await evaluate(sw, read)).status.revision, beforeSwitch.revision);
       await click('Warm');
       await wait(300);
+      await until(() => evaluate(view, 'typeof window.releaseReply === "function"'), Boolean, 'Pending Gemini response');
       await evaluate(view, 'window.releaseReply()');
       await wait(200);
       assert.equal((await evaluate(sw, read)).status.effects.bassDb, 2);
       const staleRevision = await evaluate(sw, "chrome.runtime.sendMessage({target:'audio',type:'APPLY_EFFECTS',patch:{bassDb:8},sessionId:" + JSON.stringify(capture.status.session.id) + ",baseRevision:" + revision + "})");
       assert.equal(staleRevision.ok, false);
+      await selectPanel('home');
       console.log('Gemini failure, unsupported response and stale edit checks passed.');
     }
     if (process.env.MOODSHIFT_MEMORY_TEST) {
@@ -244,58 +362,135 @@ try {
         document.querySelector('#interpret').requestSubmit();
       })()`);
       const memory = id => evaluate(view, `document.querySelector('#memory-${id}').click()`);
+      await selectPanel('settings');
       await evaluate(view, `document.querySelector('#personalization').open = true;
         window.memoryCalls = [];
-        window.preferenceList = [];
         window.fetch = async (url, options) => {
           const data = JSON.parse(options.body);
           window.memoryCalls.push(data);
-          if (url.endsWith('/api/interpret')) {
-            return Response.json({ mode: 'patch', patch: { bassDb: data.personalization ? -5 : -6 }, summary: 'Reduced bass.', unsupported: [] });
-          }
-          if (data.action === 'remember') {
-            window.preferenceList.push(data.preference);
-            return Response.json({ remembered: true, processing: false });
-          }
-          if (data.action === 'view') return Response.json({ preferences: window.preferenceList });
-          if (!window.allowClear) return Response.json({ error: 'Supermemory did not confirm deletion.' }, { status: 502 });
-          window.preferenceList = [];
-          return Response.json({ cleared: true });
+          return Response.json({ actions: [{ control: 'bassDb', operation: 'set', value: data.localPreferences ? -6 : -4 }], summary: 'Reduced bass.', unsupported: [] });
         }`);
       assert.equal(await evaluate(view, "document.querySelector('#memory-enabled').checked"), false);
       await memory('enabled');
       await until(status, text => text === 'Personalization enabled.', 'Local personalization enable');
+      await selectPanel('home');
       await submit('Remember that I like warmer bass.');
-      await until(status, text => text === 'Preference saved to Supermemory.', 'Explicit preference prompt');
-      await evaluate(view, `(() => {
-        const field = document.querySelector('#memory-preference');
-        field.value = 'I like moderate reverb.'; field.dispatchEvent(new Event('input'));
-        document.querySelector('#memory-form').requestSubmit();
+      await until(feedback, text => text === 'Preference saved on this device.', 'Explicit local save prompt');
+      await selectPanel('settings');
+      const fill = (suffix, text) => evaluate(view, `(() => {
+        const field = document.querySelector('#memory-${suffix}preference');
+        field.value = ${JSON.stringify(text)}; field.dispatchEvent(new Event('input'));
+        document.querySelector('#memory-${suffix}form').requestSubmit();
       })()`);
-      await until(status, text => text === 'Preference saved to Supermemory.', 'Explicit preference form');
-      await memory('view');
-      await until(status, text => text === 'Preferences from Supermemory.', 'Remote preferences view');
-      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 2);
+      await fill('', 'I like moderate reverb.');
+      await until(status, text => text === 'Preference saved on this device.', 'Explicit local form save');
+      await evaluate(view, "document.querySelector('#memory-local-list li button').click()");
+      await fill('', 'I prefer light reverb.');
+      await until(status, text => text === 'Local preference updated.', 'Edit local preference');
+      await selectPanel('home');
       await submit('Remove all bass.');
       await until(feedback, text => text.startsWith('Applied ✓'), 'Personalized Gemini ACK');
-      const calls = await evaluate(view, 'window.memoryCalls');
-      assert.deepEqual(calls.map(call => call.action ?? 'interpret'), ['remember', 'remember', 'view', 'interpret']);
-      assert.equal(calls[3].personalization.installationId, calls[0].installationId);
-      assert.equal(calls[3].personalization.enabled, true);
+      let calls = await evaluate(view, 'window.memoryCalls');
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].personalization, undefined);
+      assert.deepEqual(calls[0].localPreferences, ['I like warmer bass.']);
+      assert.equal((await evaluate(sw, read)).status.effects.bassDb, -6);
+      await selectPanel('settings');
+      await evaluate(view, "document.querySelector('#memory-local-list li button:nth-child(2)').click()");
+      await until(status, text => text === 'Local preference deleted.', 'Delete local preference');
       await memory('enabled');
       await until(status, text => text.startsWith('Personalization disabled.'), 'Local personalization disable');
+      await selectPanel('home');
       await submit('Remove all bass.');
       await until(feedback, text => text.startsWith('Applied ✓'), 'Ordinary Gemini ACK');
-      assert.equal(await evaluate(view, "'personalization' in window.memoryCalls.at(-1)"), false);
-      await memory('clear');
-      await until(status, text => text === 'Supermemory did not confirm deletion.', 'Remote failure keeps list');
-      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 2);
-      await evaluate(view, 'window.allowClear = true');
-      await memory('clear');
-      await until(status, text => text === 'Supermemory confirmed remote preferences were cleared.', 'Remote clear ACK');
-      assert.equal(await evaluate(view, "document.querySelector('#memory-list').children.length"), 0);
-      console.log('Personalization opt-in, explicit saves, view, Gemini context, opt-out and remote clear passed with mock providers.');
+      assert.equal(await evaluate(view, "!('personalization' in window.memoryCalls.at(-1)) && !('localPreferences' in window.memoryCalls.at(-1))"), true);
+      await selectPanel('settings');
+      assert.equal(await evaluate(view, "document.querySelector('#memory-local-list').children.length"), 1);
+      await selectPanel('home');
+      console.log('Local preference CRUD, Gemini context and opt-out passed.');
     }
+    if (process.env.MOODSHIFT_UI_TEST) {
+      await selectPanel('settings');
+      await until(() => evaluate(view, "!document.querySelector('[data-home-section=lyrics]').disabled"), Boolean, 'Home preferences loaded');
+      assert.equal(await evaluate(view, "document.querySelector('#track-platform').textContent"), 'Browser audio');
+      assert.equal(await evaluate(view, "!document.querySelector('#song-artwork').getAttribute('src') && Boolean(document.querySelector('#platform-icon svg'))"), true);
+      assert.equal(await evaluate(view, `(() => {
+        window.testLyrics = document.querySelector('#lyrics');
+        document.querySelector('[data-home-section=lyrics]').click();
+        document.querySelector('[data-home-section=reverb]').click();
+        return document.querySelector('#settings-lyrics').contains(window.testLyrics);
+      })()`), true);
+      await until(() => evaluate(view, "chrome.storage.local.get('moodshiftHomeLayout').then(data => data.moodshiftHomeLayout)"),
+        layout => layout?.lyrics === false && layout?.reverb === true, 'Home toggles persisted');
+      await selectPanel('home');
+      assert.equal(await evaluate(view, "document.querySelector('#home-lyrics').hidden && document.querySelector('#home-reverb').contains(document.querySelector('#audio-effects'))"), true);
+      const version = (await evaluate(sw, read)).status.revision;
+      await selectPanel('settings');
+      assert.equal(await evaluate(view, "document.querySelector('#settings-lyrics').contains(window.testLyrics)"), true);
+      assert.equal((await evaluate(sw, read)).status.revision, version);
+      const images = await evaluate(view, `Promise.all(Object.entries(chrome.runtime.getManifest().icons).map(async ([size, src]) => {
+        const img = new Image(); img.src = chrome.runtime.getURL(src); await img.decode();
+        return [Number(size), img.naturalWidth, img.naturalHeight];
+      }))`);
+      assert.deepEqual(images, [[16, 16, 16], [32, 32, 32], [48, 48, 48], [128, 128, 128]]);
+      assert.equal(await evaluate(view, "!document.querySelector('#cloud-settings, #supermemory-settings')"), true);
+      if (process.env.MOODSHIFT_UI_SCREENSHOTS) {
+        const { targetId: preview } = await send('Target.createTarget', { url: origin + '/sidepanel.html' });
+        const narrow = await attach(preview);
+        await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: false }, narrow);
+        await until(() => evaluate(narrow, "document.querySelector('#presets')?.children.length"), count => count === 4, 'Preview loaded');
+        for (const page of ['home', 'settings', 'controls']) {
+          await evaluate(narrow, `document.querySelector('#${page === 'home' ? 'home' : 'settings'}-tab').click();
+            if ('${page}' === 'controls') {
+              document.querySelector('#customize-home').open = false;
+              document.querySelector('#audio-effects').open = true;
+              document.querySelector('#effect-settings').open = true;
+            }`);
+          await wait(200);
+          const sizing = await evaluate(narrow, `({ viewport: innerWidth, document: document.documentElement.scrollWidth,
+            overflow: Array.from(document.querySelectorAll('main *')).filter(el => el.getBoundingClientRect().right > innerWidth).map(el => el.id || el.tagName) })`);
+          assert.ok(sizing.viewport === 320 && sizing.document <= 320, `${page} viewport: ${JSON.stringify(sizing)}`);
+          const screenshot = await send('Page.captureScreenshot', { format: 'png' }, narrow);
+          await writeFile(resolve(testDir, `ui-${page}.png`), Buffer.from(screenshot.data, 'base64'));
+        }
+        await send('Emulation.setDeviceMetricsOverride', { width: 250, height: 620, deviceScaleFactor: 1, mobile: false }, narrow);
+        assert.ok(await evaluate(narrow, 'document.documentElement.scrollWidth <= 250'));
+        await send('Target.closeTarget', { targetId: preview });
+        const { targetId: managementTab } = await send('Target.createTarget', { url: 'chrome://extensions/' });
+        const management = await attach(managementTab);
+        await until(() => evaluate(management, `(() => {
+          const list = document.querySelector('extensions-manager')?.shadowRoot?.querySelector('extensions-item-list');
+          const entry = Array.from(list?.shadowRoot?.querySelectorAll('extensions-item') ?? []).find(item => item.data?.id === ${JSON.stringify(id)});
+          const icon = entry?.shadowRoot?.querySelector('img');
+          return Boolean(icon?.complete && icon.naturalWidth > 0);
+        })()`), Boolean, 'MoodShift icon rendered in Chrome extension management');
+        await send('Target.closeTarget', { targetId: managementTab });
+      }
+    }
+    const beforeClose = (await evaluate(sw, read)).status;
+    await selectPanel('settings');
+    const windowId = await evaluate(sw, `chrome.tabs.get(${beforeClose.session.tabId}).then(tab => tab.windowId)`);
+    await evaluate(sw, `chrome.sidePanel.close({windowId:${windowId}})`);
+    await until(async () => (await send('Target.getTargets')).targetInfos.some(t => t.targetId === panel.targetId),
+      open => !open, 'Side panel closed');
+    const withoutPanel = (await evaluate(sw, read)).status;
+    assert.equal(withoutPanel.session.id, beforeClose.session.id);
+    assert.equal(withoutPanel.revision, beforeClose.revision);
+    assert.ok(withoutPanel.features.rms > 0.03);
+    await send('Extensions.triggerAction', { id, targetId });
+    const reopened = await attach((await find(t => t.url === origin + '/sidepanel.html', 'reopened side panel')).targetId);
+    await until(() => evaluate(reopened, "document.querySelector('#settings-tab')?.getAttribute('aria-selected')"),
+      selected => selected === 'true', 'Settings selection persisted after reopening');
+    if (process.env.MOODSHIFT_UI_TEST) {
+      await until(() => evaluate(reopened, "!document.querySelector('[data-home-section=lyrics]').disabled"), Boolean, 'Restored Home preferences loaded');
+      assert.equal(await evaluate(reopened, "!document.querySelector('[data-home-section=lyrics]').checked && document.querySelector('[data-home-section=reverb]').checked"), true);
+      await evaluate(reopened, "document.querySelector('[data-home-section=lyrics]').click(); document.querySelector('[data-home-section=reverb]').click()");
+      await until(() => evaluate(reopened, "chrome.storage.local.get('moodshiftHomeLayout').then(data => data.moodshiftHomeLayout)"),
+        layout => layout?.lyrics === true && layout?.reverb === false, 'Home defaults restored');
+      console.log('Home customization, reopening, Settings access, original icon sizes, narrow layout and platform fallback passed.');
+    }
+    await evaluate(reopened, "document.querySelector('#home-tab').click()");
+    console.log('Capture continued while the side panel was closed and Settings selection survived reopening.');
   }
   await send('Extensions.triggerAction', { id, targetId });
   await wait(400);
@@ -320,19 +515,26 @@ try {
     const stale = await evaluate(sw, "chrome.runtime.sendMessage({target:'audio',type:'APPLY_EFFECTS',patch:{bassDb:8},sessionId:" + JSON.stringify(capture.status.session.id) + "})");
     assert.equal(stale.ok, false);
     await send('Target.closeTarget', { targetId: secondPage.targetId });
-    await wait(450);
-    assert.equal((await evaluate(sw, read)).status.phase, 'ready');
+    await until(async () => (await evaluate(sw, read)).status.phase, phase => phase === 'ready', 'Closed source released capture');
     await send('Extensions.triggerAction', { id, targetId });
-    await wait(700);
   }
-  const current = (await evaluate(sw, read)).status;
+  const current = await until(async () => (await evaluate(sw, read)).status,
+    state => state.phase === 'capturing' && state.session.title === 'Test tone', 'Reopened tone capture');
   const panel = await find(t => t.url === origin + '/sidepanel.html', 'side panel');
   const view = await attach(panel.targetId);
+  await until(() => evaluate(view, "!document.querySelector('#stop').disabled"), Boolean, 'Stop is available');
   await evaluate(view, "document.querySelector('#stop').click()");
-  await wait(350);
-  assert.equal((await evaluate(sw, read)).status.phase, 'ready');
-  assert.equal((await evaluate(sw, 'chrome.tabCapture.getCapturedTabs()')).find(tab => tab.tabId === current.session.tabId)?.status, 'stopped');
+  await until(async () => (await evaluate(sw, read)).status.phase, phase => phase === 'ready', 'Stop acknowledged');
+  await until(async () => (await evaluate(sw, 'chrome.tabCapture.getCapturedTabs()'))
+    .find(tab => tab.tabId === current.session.tabId)?.status, state => state === 'stopped', 'Tab capture released');
   console.log('Local tone, DSP controls, tab switching and Stop checks passed.');
+  if (commands) await checkCommands({ send, evaluate, find, attach, until, url, origin, id, sw, read, startStemHelper, stopStemHelper });
+  const tuningSnapshot = tuning ? await checkTuning({ send, evaluate, find, attach, until, url, origin, id, sw, read,
+    startStemHelper, stopStemHelper }) : undefined;
+  if (reverb) {
+    assert.ok(!process.env.MOODSHIFT_REVERB_STEMS || stemPort, 'Reverb stem fixture requires an isolated MOODSHIFT_STEM_TEST_PORT');
+    await checkReverb({ send, evaluate, find, attach, until, url, origin, id, sw, read, startStemHelper, stopStemHelper });
+  }
   if (process.env.MOODSHIFT_CHORDS_TEST) {
     const songUrl = 'https://www.youtube.com/watch?v=PqJNc9KVIZE';
     const { targetId: songTab } = await send('Target.createTarget', { url: songUrl, forTab: true });
@@ -346,7 +548,7 @@ try {
     await evaluate(song, "document.querySelector('#movie_player video').play().catch(() => undefined)");
     await send('Extensions.triggerAction', { id, targetId: songTab });
     const chordsPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'chords side panel')).targetId);
-    const openChords = () => evaluate(chordsPanel, "document.querySelector('#chords').open = true");
+    const openChords = () => evaluate(chordsPanel, "document.querySelector('#settings-tab').click(); document.querySelector('#chords').open = true");
     const readChords = () => evaluate(chordsPanel, `({
       status: document.querySelector('#chords-status').textContent,
       current: document.querySelector('#chord-current').textContent,
@@ -354,8 +556,6 @@ try {
       keyboard: Boolean(document.querySelector('.chord-piano')),
       guitar: Boolean(document.querySelector('.chord-guitar')),
     })`);
-    await openChords();
-    await until(readChords, value => value.status === 'Songle · Estimated chords', 'Live Songle timeline', 40);
     async function seek(position, rate = 1) {
       await evaluate(song, `(() => {
         const video = document.querySelector('#movie_player video');
@@ -366,19 +566,22 @@ try {
       const input = document.querySelector('#lyrics-offset'); input.value = ${JSON.stringify(String(offset))};
       input.dispatchEvent(new Event('change'));
     })()`);
+    await openChords();
+    await until(readChords, value => value.status === 'Songle · Estimated chords', 'Live Songle timeline', 40);
+    await setOffset(1.2); // Neutralize the restored recording alignment for known Songle event boundaries.
     await seek(13.5);
     await until(readChords, value => value.current === 'Eb' && value.next === 'Eb/Ab' && value.keyboard && value.guitar, 'Diagrams and next chord');
     await seek(17);
     await until(readChords, value => value.current === 'Eb/Ab', 'Forward chord seek');
     await seek(16, 2);
-    await setOffset(1);
+    await setOffset(2.2);
     await until(readChords, value => value.current === 'Eb', 'Rate-adjusted chord offset');
-    await setOffset(0);
+    await setOffset(1.2);
     await seek(13.5);
     await until(readChords, value => value.current === 'Eb', 'Backward chord seek');
     assert.ok(await evaluate(chordsPanel, "chrome.storage.local.get('songleChordCacheV1').then(values => values.songleChordCacheV1?.PqJNc9KVIZE?.result?.events.length > 20)"));
     await evaluate(chordsPanel, "document.querySelector('#stop').click()");
-    await until(readChords, value => value.status.startsWith('Select a YouTube'), 'Chord status cleared after Stop');
+    await until(readChords, value => value.status.startsWith('Select a playing'), 'Chord status cleared after Stop');
     console.log('Live Songle timeline, diagrams, pause/seek, playback rate, shared offset, cache and Stop passed on its documented YouTube example.');
   }
   if (process.env.MOODSHIFT_LYRICS_TEST) {
@@ -391,9 +594,10 @@ try {
       const video = player?.querySelector('video');
       return { duration: video?.duration, ad: player?.classList.contains('ad-showing') };
     })()`);
-    const media = await until(readMedia, result => result.duration > 180 && result.duration < 210 && !result.ad,
-      'Expected YouTube recording to load', 60);
+    await until(() => evaluate(song, "Boolean(document.querySelector('#movie_player video'))"), Boolean, 'YouTube lyrics player');
     await evaluate(song, "document.querySelector('#movie_player video').play().catch(() => undefined)");
+    const media = await until(readMedia, result => result.duration > 180 && result.duration < 210 && !result.ad,
+      'Expected YouTube recording to load', 160);
     await send('Extensions.triggerAction', { id, targetId: songTab });
     const capture = await until(async () => (await evaluate(sw, read)).status,
       state => state.phase === 'capturing' && state.session.title.includes('Code Monkey'), 'Lyrics capture');
@@ -408,6 +612,8 @@ try {
     const synced = state => state.title === 'Code Monkey' && state.artist === 'Jonathan Coulton'
       && state.status === 'Synchronized lyrics' && state.count > 2;
     await until(readLyrics, synced, 'LRCLIB synchronized result for YouTube duration ' + media.duration, 56);
+    await evaluate(lyricsPanel, "document.querySelector('#home-tab').click()");
+    assert.equal(await evaluate(lyricsPanel, "document.querySelector('#home-lyrics').contains(document.querySelector('#lyrics-viewport'))"), true);
     const highlighted = () => evaluate(lyricsPanel,
       "Array.from(document.querySelector('#lyrics-viewport').children).findIndex(line => line.hasAttribute('aria-current'))");
     async function seek(position) {
@@ -436,7 +642,7 @@ try {
     assert.equal(await highlighted(), secondLine);
     console.log('Live LRCLIB synchronized lyrics, title/artist, pause, seek, playback rate, offset and panel reopen passed.');
 
-    await evaluate(lyricsPanel, "Array.from(document.querySelectorAll('button')).find(button => button.textContent === 'Dreamy').click()");
+    await evaluate(lyricsPanel, "document.querySelector('[data-audio-preset=Dreamy]').click()");
     await until(async () => (await evaluate(sw, read)).status.effects?.reverbMix,
       reverb => reverb === 0.33, 'Audio preset remains available');
 
@@ -499,7 +705,11 @@ try {
     );
     const panel = await find(t => t.url === origin + '/sidepanel.html', 'stem panel');
     const panelView = await attach(panel.targetId);
-    const click = name => evaluate(panelView, `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)}).click()`);
+    const click = async name => {
+      const button = `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)})`;
+      await until(() => evaluate(panelView, `(${button})?.disabled === false`), Boolean, name + ' is available');
+      await evaluate(panelView, `(${button}).click()`);
+    };
     const feedback = () => evaluate(panelView, "document.querySelector('#feedback').textContent");
     const stemState = async () => (await evaluate(sw, read)).status.stem;
     const submit = async prompt => {
@@ -511,11 +721,12 @@ try {
       await until(() => evaluate(panelView, "!document.querySelector('#apply').disabled"), Boolean, 'Prompt can submit');
       await evaluate(panelView, "document.querySelector('#interpret').requestSubmit()");
     };
-    await click('Instrumental');
-    await until(stemState, stem => stem.phase === 'unavailable', 'Missing-helper fallback');
-    assert.doesNotMatch(await feedback(), /Applied/);
-
-    await startStemHelper(id);
+    if (!localStemsWithCloudApi) {
+      await click('Instrumental');
+      await until(stemState, stem => stem.phase === 'unavailable', 'Missing-helper fallback');
+      assert.doesNotMatch(await feedback(), /Applied/);
+      await startStemHelper(id);
+    }
     const offscreen = await find(t => t.url === origin + '/offscreen.html', 'stem audio document');
     const audio = await attach(offscreen.targetId);
     await evaluate(audio, `(() => {
@@ -542,6 +753,15 @@ try {
     assert.notEqual(powers[0], powers[2]);
     await submit('vocals only');
     await until(stemState, stem => stem.phase === 'active' && stem.mode === 'vocals', 'Vocals did not activate');
+    const beforeTabs = (await evaluate(sw, read)).status;
+    await evaluate(panelView, "document.querySelector('#settings-tab').click(); document.querySelector('#stem-controls').open = true");
+    assert.equal(await evaluate(panelView, "document.querySelector('#stem-controls').contains(document.querySelector('[data-stem=vocals][aria-pressed=true]'))"), true);
+    await evaluate(panelView, "document.querySelector('#home-tab').click()");
+    const afterTabs = (await evaluate(sw, read)).status;
+    assert.equal(afterTabs.session.id, beforeTabs.session.id);
+    assert.equal(afterTabs.revision, beforeTabs.revision);
+    assert.deepEqual(afterTabs.stem, beforeTabs.stem);
+    console.log('Active Vocals stem and capture survived Home and Settings navigation.');
     await click('Original');
     assert.match(await until(() => evaluate(panelView, "document.querySelector('#stem-status').textContent"),
       value => value.includes('Live mix'), 'Original bypass label'), /delayed stem/);
@@ -554,7 +774,7 @@ try {
       await evaluate(panelView, 'if (window.unmockedFetch) window.fetch = window.unmockedFetch');
     } else {
       await evaluate(panelView, `window.fetch = () => Promise.resolve(Response.json({
-        mode: 'patch', patch: { reverbMix: 0.28 }, stemMode: 'instrumental',
+        actions: [{ control: 'reverb.amount', operation: 'set', value: 0.28 }, { control: 'mix', operation: 'set', value: 'instrumental' }],
         summary: 'Instrumental with more reverb.', unsupported: [],
       }))`);
     }
@@ -601,7 +821,8 @@ try {
     }
     await evaluate(player, `document.querySelector('${media}').pause()`);
     await wait(3250);
-    assert.equal((await stemState()).phase, 'active', 'Paused PCM remains in sequence');
+    const pausedStem = await stemState();
+    assert.equal(pausedStem.phase, 'active', `Paused PCM remains in sequence: ${JSON.stringify(pausedStem)}`);
     await evaluate(player, `document.querySelector('${media}').play()`);
     await send('Target.activateTarget', { targetId: page.targetId });
     await send('Extensions.triggerAction', { id, targetId });
@@ -614,14 +835,17 @@ try {
       state => state.phase === 'capturing' && state.session.tabId === capture.session.tabId, 'Recapture stem source');
     await click('Vocals');
     await until(stemState, stem => stem.phase === 'active' && stem.mode === 'vocals', 'Reconnected helper after tab switch');
-    await stopStemHelper();
-    await until(stemState, stem => stem.phase === 'unavailable', 'Helper-disconnect fallback');
-    const recovered = (await evaluate(sw, read)).status;
-    assert.equal(recovered.session.id, resumedCapture.session.id);
-    assert.equal(recovered.stem.mode, 'full');
+    if (!localStemsWithCloudApi) {
+      await stopStemHelper();
+      await until(stemState, stem => stem.phase === 'unavailable', 'Helper-disconnect fallback');
+      const recovered = (await evaluate(sw, read)).status;
+      assert.equal(recovered.session.id, resumedCapture.session.id);
+      assert.equal(recovered.stem.mode, 'full');
+      console.log('Helper-disconnect fallback passed.');
+    }
     await click('Stop processing');
     await until(async () => (await evaluate(sw, read)).status, status => status.phase === 'ready', 'Stop after stem capture');
-    console.log('Real helper and stem PCM, prompts, A/B, pause/resume, tab switch, reconnection, helper-disconnect fallback and Stop passed.');
+    console.log('Real helper and stem PCM, prompts, A/B, pause/resume, tab switch, reconnection and Stop passed.');
   }
   if (process.env.MOODSHIFT_YOUTUBE_TEST) {
     const youtube = 'https://www.youtube.com/watch?v=rZWLwz9_7o0';
@@ -636,14 +860,19 @@ try {
     await send('Extensions.triggerAction', { id, targetId: youtubeTab.targetId });
     const youtubeStatus = await until(
       async () => (await evaluate(sw, read)).status,
-      status => status.phase === 'capturing' && status.features.rms > 0.001,
+      status => status.phase === 'capturing' && status.features.rms > 0.001
+        && (!tuningSnapshot || status.audioTiming.pitch.phase === 'active'),
       'YouTube audio did not reach the analyser',
     );
+    if (tuningSnapshot) {
+      assert.deepEqual(youtubeStatus.tuning, tuningSnapshot.moodshiftTuning);
+      assert.equal(await evaluate(video, "document.querySelector('video').playbackRate"), 1);
+    }
     const playhead = () => evaluate(video, "document.querySelector('video').currentTime");
     const before = await playhead();
     const panel = await find(t => t.url === origin + '/sidepanel.html', 'YouTube side panel');
     const controls = await attach(panel.targetId);
-    await evaluate(controls, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Dreamy').click()");
+    await evaluate(controls, "document.querySelector('[data-audio-preset=Dreamy]').click()");
     await wait(500);
     assert.equal((await evaluate(sw, read)).status.effects.reverbMix, 0.33);
     const windowId = await evaluate(sw, 'chrome.tabs.get(' + youtubeStatus.session.tabId + ').then(tab => tab.windowId)');
@@ -659,6 +888,10 @@ try {
     assert.equal(backgroundCapture.session.id, youtubeStatus.session.id);
     assert.ok(backgroundCapture.features.rms > 0.001);
     assert.equal(backgroundCapture.effects.reverbMix, 0.33);
+    if (tuningSnapshot) {
+      assert.equal(backgroundCapture.audioTiming.pitch.latencySeconds, 0.1);
+      assert.deepEqual(backgroundCapture.tuning, tuningSnapshot.moodshiftTuning);
+    }
     await until(playhead, position => position > before + 0.75, 'Background YouTube playback did not advance');
     if (process.env.MOODSHIFT_WORKER_TEST) {
       await send('Target.detachFromTarget', { sessionId: sw });
@@ -695,6 +928,8 @@ try {
     console.log('YouTube signal, Dreamy ACK, uninterrupted playhead, background capture, panel reopen and Stop passed.');
   }
   if (process.env.MOODSHIFT_PRESETS_TEST) {
+    const lastPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'side panel before restart')).targetId);
+    await evaluate(lastPanel, "document.querySelector('#settings-tab').click()");
     await closeChrome();
     [chrome, chromeExited] = launchChrome();
     const reloaded = await send('Extensions.loadUnpacked', { path: extensionPath });
@@ -708,6 +943,13 @@ try {
     const restartedPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'restarted side panel')).targetId);
     const readStatus = () => evaluate(restartedPanel, "chrome.runtime.sendMessage({target:'worker',type:'GET_STATUS'})");
     await until(readStatus, reply => reply.status.phase === 'capturing', 'Restarted capture');
+    assert.equal(await evaluate(restartedPanel, "document.querySelector('#settings-tab').getAttribute('aria-selected')"), 'true');
+    if (process.env.MOODSHIFT_MEMORY_TEST) {
+      const list = () => evaluate(restartedPanel, "Array.from(document.querySelectorAll('#memory-local-list li span'), row => row.textContent)");
+      assert.deepEqual(await until(list, rows => rows.length === 1, 'Preferences persisted after Chrome restart'), ['I like warmer bass.']);
+      assert.equal(await evaluate(restartedPanel, "document.querySelector('#memory-enabled').checked"), false);
+      console.log('Local preference, opt-out and selected tab persisted across Chrome restart.');
+    }
     assert.equal((await readStatus()).status.effects.reverbMix, 0);
     await until(() => evaluate(restartedPanel,
       "[...document.querySelector('#saved-preset-list').options].find(option => option.text === 'Restart preset')?.value"),
@@ -726,6 +968,17 @@ try {
     assert.equal(saved.monitor, 'original');
     assert.equal(saved.stem.mode, 'full');
     console.log('Saved preset persisted across Chrome restart and restored exact DSP settings and monitor offline.');
+  }
+  if (tuningSnapshot) {
+    await closeChrome();
+    [chrome, chromeExited] = launchChrome();
+    const restarted = await send('Extensions.loadUnpacked', { path: extensionPath });
+    assert.equal(restarted.id, id);
+    const domain = await attach((await send('Target.createTarget', { url: origin + '/domain.html' })).targetId);
+    await until(() => evaluate(domain, "document.querySelector('#domain-preset')?.value"),
+      preset => preset === tuningSnapshot.moodshiftTuning.eq.preset, 'Selected custom EQ after browser restart');
+    assert.deepEqual(await evaluate(domain, 'chrome.storage.local.get(Object.keys(' + JSON.stringify(tuningSnapshot) + '))'), tuningSnapshot);
+    console.log('Pitch, EQ preset, precise custom points and Home visibility persisted across Chrome restart.');
   }
 } finally {
   await stopStemHelper();

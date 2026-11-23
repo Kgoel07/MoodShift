@@ -1,5 +1,10 @@
 import { effectSpecs, neutralEffects, type AudioEffectState } from './shared/effects';
 import type { MonitorMode } from './shared/types';
+import { LocalReverb } from './reverb';
+import { defaultReverb, type ReverbSettings } from './shared/reverb';
+import { PitchStage } from './pitch-stage';
+import { EqualizerStage } from './equalizer-stage';
+import type { TuningSettings } from './shared/tuning';
 
 const timeConstant = 0.075; // About 98% of the transition in 300 ms.
 const dbToGain = (db: number) => 10 ** (db / 20);
@@ -11,6 +16,15 @@ export class AudioEngine {
   private readonly original = this.gain(0);
   private readonly modified = this.gain(1);
   private readonly master = this.gain(1);
+  private readonly monitorOut = this.gain(1);
+  private readonly pitchOut = this.gain(1);
+  readonly equalizerOutput = this.gain(1);
+  private readonly pitch = new PitchStage(this.context, this.monitorOut, this.pitchOut,
+    chrome.runtime.getURL('pitch-processor.mjs'), this.onTimingChange);
+  private readonly equalizer = new EqualizerStage(this.context, this.pitchOut, this.equalizerOutput);
+  private readonly reverb = new LocalReverb(this.context, this.equalizerOutput, this.master);
+  private tuning?: TuningSettings;
+  private reverbSettings: ReverbSettings = { ...defaultReverb };
   private readonly fullInput = this.gain(1);
   private readonly stemInput = this.gain(0);
   private activeStem = false;
@@ -31,17 +45,16 @@ export class AudioEngine {
   private readonly distortionWet = this.gain(0);
   private readonly effectsInput = this.gain(1);
   private readonly spaceDry = this.gain(1);
-  private readonly reverbSend = this.gain(0);
-  private readonly reverbReturn = this.gain(0);
   private readonly delaySend = this.gain(0);
   private readonly delayReturn = this.gain(0);
   private readonly delay = this.track(this.context.createDelay(0.5));
   private readonly feedback = this.gain(0);
   private effects: Readonly<AudioEffectState> = neutralEffects;
 
-  constructor(private readonly context: AudioContext, private readonly stream: MediaStream) {
+  constructor(private readonly context: AudioContext, private readonly stream: MediaStream,
+    private readonly onTimingChange: () => void) {
     this.source.connect(this.analyser);
-    this.source.connect(this.original).connect(this.master);
+    this.source.connect(this.original).connect(this.monitorOut);
     const limiter = this.track(context.createDynamicsCompressor());
     limiter.threshold.value = -3;
     limiter.knee.value = 0;
@@ -68,14 +81,11 @@ export class AudioEngine {
     this.lowpassOut.connect(this.distortionDry).connect(this.effectsInput);
     this.lowpassOut.connect(shaper).connect(this.distortionWet).connect(this.effectsInput);
 
-    const convolver = this.track(context.createConvolver());
-    convolver.buffer = this.impulseResponse();
     this.effectsInput.connect(this.spaceDry).connect(this.outputGain);
-    this.effectsInput.connect(this.reverbSend).connect(convolver).connect(this.reverbReturn).connect(this.outputGain);
     this.delay.delayTime.value = 0.01;
     this.effectsInput.connect(this.delaySend).connect(this.delay).connect(this.delayReturn).connect(this.outputGain);
     this.delay.connect(this.feedback).connect(this.delay);
-    this.outputGain.connect(this.modified).connect(this.master);
+    this.outputGain.connect(this.modified).connect(this.monitorOut);
   }
 
   private track<T extends AudioNode>(node: T): T {
@@ -97,17 +107,18 @@ export class AudioEngine {
     return node;
   }
 
-  private impulseResponse(): AudioBuffer {
-    const frames = Math.ceil(this.context.sampleRate * 1.5);
-    const buffer = this.context.createBuffer(2, frames, this.context.sampleRate);
-    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
-      const samples = buffer.getChannelData(channel);
-      for (let index = 0; index < frames; index++) {
-        samples[index] = (2 * Math.random() - 1) * (1 - index / frames) ** 3;
-      }
-    }
-    return buffer;
+  setReverb(settings: ReverbSettings): void {
+    this.reverbSettings = settings;
+    this.reverb.update(settings, this.effects.reverbMix);
   }
+
+  setTuning(settings: TuningSettings): void {
+    if (this.tuning?.eq !== settings.eq) this.equalizer.update(settings.eq);
+    if (this.tuning?.pitch !== settings.pitch) this.pitch.update(settings.pitch);
+    this.tuning = settings;
+  }
+
+  get pitchPlayback() { return this.pitch.status; }
 
   private ramp(param: AudioParam, value: number): void {
     const now = this.context.currentTime;
@@ -180,17 +191,13 @@ export class AudioEngine {
     if (oldEcho !== echo || next.delayFeedback !== previous.delayFeedback) {
       this.ramp(this.feedback.gain, echo > 0 ? next.delayFeedback : 0);
     }
-    if (oldEcho !== echo || previous.reverbMix !== next.reverbMix) {
-      // The two wet returns share the dry budget. Sends close at zero so reset also clears future tails.
-      const dry = (1 - next.reverbMix) * (1 - echo);
-      const echoWet = echo * (1 - next.reverbMix);
-      this.ramp(this.spaceDry.gain, dry);
-      this.ramp(this.reverbReturn.gain, next.reverbMix);
-      this.ramp(this.reverbSend.gain, next.reverbMix > 0 ? 1 : 0);
-      this.ramp(this.delayReturn.gain, echoWet * (1 - next.delayFeedback));
+    if (previous.reverbMix !== next.reverbMix) this.reverb.update(this.reverbSettings, next.reverbMix);
+    if (oldEcho !== echo) {
+      this.ramp(this.spaceDry.gain, 1 - echo);
+      this.ramp(this.delayReturn.gain, echo * (1 - next.delayFeedback));
       this.ramp(this.delaySend.gain, echo > 0 ? 1 : 0);
     } else if (next.delayFeedback !== previous.delayFeedback && echo > 0) {
-      this.ramp(this.delayReturn.gain, echo * (1 - next.reverbMix) * (1 - next.delayFeedback));
+      this.ramp(this.delayReturn.gain, echo * (1 - next.delayFeedback));
     }
     if (previous.outputGainDb !== next.outputGainDb) this.ramp(this.outputGain.gain, dbToGain(next.outputGainDb));
     this.effects = next;
@@ -203,7 +210,15 @@ export class AudioEngine {
     this.ramp(wet.gain, active ? 1 : 0);
   }
 
+  tapInput(node: AudioNode): () => void {
+    this.source.connect(node);
+    return () => this.source.disconnect(node);
+  }
+
   disconnect(): void {
+    this.pitch.close();
+    this.equalizer.close();
+    this.reverb.disconnect();
     this.nodes.forEach(node => node.disconnect());
   }
 }

@@ -1,0 +1,9 @@
+https://{$STEM_DOMAIN} {
+	@stem path / /stem
+	handle @stem {
+		reverse_proxy 127.0.0.1:8788
+	}
+	handle {
+		respond 404
+	}
+}

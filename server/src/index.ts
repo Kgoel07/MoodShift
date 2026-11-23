@@ -1,28 +1,25 @@
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import dotenv from 'dotenv';
-import express, { type ErrorRequestHandler } from 'express';
-import { interpret, ProxyError, type ModelConfig } from './interpret';
-import { requestSchema } from './schema';
-import { createMemory, MemoryError, memoryRequest, type Memory } from './memory';
+import express, { type ErrorRequestHandler, type RequestHandler } from 'express';
+import type { ZodType } from 'zod';
+import { interpret, interpretControls, ProxyError, type ModelConfig } from './interpret.js';
+import { controlRequestSchema, requestSchema } from './schema.js';
+import { demoGuard, extensionOrigin, type AccessPolicy } from './access.js';
 
-const extensionOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
-
-export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, memory?: Memory) {
+export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch,
+  policy: AccessPolicy = { mode: 'local' }) {
   const app = express();
   app.disable('x-powered-by');
   app.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
     res.vary('Origin');
     const origin = req.get('Origin');
-    if (origin !== undefined && !extensionOrigin.test(origin)) {
-      res.status(403).json({ error: 'Only Chrome extension origins may call the proxy from a browser.' });
+    if (origin !== undefined && (!extensionOrigin.test(origin) || (policy.origins && !policy.origins.has(origin)))) {
+      res.status(403).json({ error: 'This browser origin is not allowed.' });
       return;
     }
     if (origin) {
       res.set('Access-Control-Allow-Origin', origin);
       res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.set('Access-Control-Allow-Headers', 'Content-Type');
+      res.set('Access-Control-Allow-Headers', policy.mode === 'local' ? 'Content-Type' : 'Content-Type, Authorization');
     }
     if (req.method === 'OPTIONS') {
       res.sendStatus(origin ? 204 : 403);
@@ -32,64 +29,44 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, me
   });
 
   app.get('/health', (_req, res) => {
+    res.set('X-MoodShift-Controls', '2');
     res.json({ ok: true, aiConfigured: Boolean(config.apiKey), model: config.model });
   });
+  if (policy.mode !== 'local') app.use('/api', demoGuard(policy.token));
 
-  app.post('/api/interpret', express.json({ limit: '8kb', inflate: false }), async (req, res) => {
+  const handleInterpretation = <T extends { localPreferences?: string[] }>(schema: ZodType<T>,
+    run: (request: Omit<T, 'localPreferences'>, config: ModelConfig, fetcher: typeof fetch,
+      signal: AbortSignal, preferences: string[]) => Promise<unknown>): RequestHandler => async (req, res) => {
     if (!req.is('application/json')) {
       res.status(415).json({ error: 'Send application/json.' });
       return;
     }
-    const request = requestSchema.safeParse(req.body);
+    const request = schema.safeParse(req.body);
     if (!request.success) {
       res.status(400).json({ error: 'Provide a 1–500 character prompt, all effect values, and bounded audio features.' });
       return;
     }
+    if (policy.mode !== 'local' && !config.apiKey) {
+      res.status(503).json({ error: 'Gemini is not configured on this cloud backend.' });
+      return;
+    }
     const controller = new AbortController();
     res.once('close', () => {
       if (!res.writableEnded) controller.abort();
     });
     try {
-      const { personalization, ...audioRequest } = request.data;
-      const preferences = config.apiKey && personalization?.enabled
-        ? await memory?.context(personalization.installationId, controller.signal) : undefined;
-      if (controller.signal.aborted) return;
-      const result = await interpret(audioRequest, config, fetcher, controller.signal, preferences);
+      const { localPreferences = [], ...audioRequest } = request.data;
+      const preferences = [...new Set(localPreferences)];
+      const result = await run(audioRequest, config, fetcher, controller.signal, preferences);
       if (!controller.signal.aborted) res.json(result);
     } catch (error) {
       if (controller.signal.aborted) return;
       if (error instanceof ProxyError) res.status(error.status).json({ error: error.message });
-      else res.status(500).json({ error: 'The local proxy could not interpret the request.' });
+      else res.status(500).json({ error: 'The MoodShift proxy could not interpret the request.' });
     }
-  });
-
-  app.post('/api/memory', express.json({ limit: '2kb', inflate: false }), async (req, res) => {
-    if (!req.is('application/json')) {
-      res.status(415).json({ error: 'Send application/json.' });
-      return;
-    }
-    const request = memoryRequest.safeParse(req.body);
-    if (!request.success) {
-      res.status(400).json({ error: 'Provide a valid installation ID and preference action. A preference must be a single line.' });
-      return;
-    }
-    if (!memory) {
-      res.status(503).json({ error: 'Set SUPERMEMORY_API_KEY in server/.env and restart the proxy.' });
-      return;
-    }
-    const controller = new AbortController();
-    res.once('close', () => {
-      if (!res.writableEnded) controller.abort();
-    });
-    try {
-      const result = await memory.manage(request.data, controller.signal);
-      if (!controller.signal.aborted) res.json(result);
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      if (error instanceof MemoryError) res.status(error.status).json({ error: error.message });
-      else res.status(500).json({ error: 'The proxy could not complete the preference action.' });
-    }
-  });
+  };
+  app.post('/api/interpret', express.json({ limit: '8kb', inflate: false }), handleInterpretation(requestSchema, interpret));
+  app.post('/api/interpret/v2', express.json({ limit: '12kb', inflate: false }), handleInterpretation(controlRequestSchema, interpretControls));
 
   const inputErrors: ErrorRequestHandler = (error, _req, res, _next) => {
     const status = error.status === 413 ? 413 : error.status === 415 ? 415 : 400;
@@ -97,14 +74,4 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch, me
   };
   app.use(inputErrors);
   return app;
-}
-
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  dotenv.config({ path: fileURLToPath(new URL('../.env', import.meta.url)) });
-  const model = process.env.GEMINI_MODEL?.trim() || 'gemini-3.1-flash-lite';
-  const port = Number(process.env.PORT ?? 8787);
-  if (port !== 8787) throw new Error('PORT must be 8787 to match the extension endpoint.');
-  const app = createApp({ apiKey: process.env.GEMINI_API_KEY?.trim() || '', model },
-    fetch, createMemory(process.env.SUPERMEMORY_API_KEY));
-  app.listen(port, '127.0.0.1', () => console.log(`MoodShift proxy ready at http://127.0.0.1:${port}`));
 }

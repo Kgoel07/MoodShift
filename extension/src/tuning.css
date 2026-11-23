@@ -1,0 +1,54 @@
+.effect-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+fieldset label.effect-toggle { display: inline-flex; gap: 7px; align-items: center; cursor: pointer; }
+.effect-toggle input { margin: 0; flex-shrink: 0; }
+.effect-header button, .domain-link { font-size: 12px; }
+.effect-header button { min-height: 28px; }
+.eq-preset-field select { grid-column: 1 / -1; background-color: var(--panel); margin-top: 4px; }
+.eq-compact-chart { display: block; width: 100%; height: 83px; border-radius: 7px; background: var(--panel); }
+#eq-bands { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 3px; margin-top: 4px; }
+#eq-bands .eq-band { position: relative; display: grid; grid-template: auto 81px auto / minmax(0, 1fr); justify-items: center; min-width: 0; padding: 4px 0; font-size: 10px; }
+.eq-band output { color: var(--text); font-size: 10px; }
+.eq-slider-track { position: relative; width: 100%; height: 100%; }
+.eq-slider-track input[type="range"] { position: absolute; inset: 50% auto auto 50%; width: 74px; height: 22px; margin: 0; transform: translate(-50%, -50%) rotate(-90deg); }
+.eq-band input[type="range"]::-webkit-slider-thumb { width: 12px; height: 12px; margin-top: -3.5px; }
+.eq-band > span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
+.domain-link { width: 100%; color: var(--accent); }
+.preset-emoji { display: inline-block; margin-right: 5px; }
+.domain-shell { max-width: 1000px; padding: clamp(18px, 4vw, 42px) clamp(12px, 3.5vw, 30px); }
+.domain-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.domain-heading > div { min-width: 0; flex: 1; }
+.domain-heading h1 { font-size: clamp(19px, 4vw, 27px); }
+.domain-heading .setting-help { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.domain-heading button { flex-shrink: 0; }
+.domain-card { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: clamp(10px, 2vw, 18px); }
+#domain-toolbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: end; margin-bottom: 12px; }
+#domain-toolbar label { padding: 0; }
+#domain-toolbar label:first-child { align-self: end; min-height: 34px; }
+#domain-toolbar select { min-width: 135px; margin-bottom: 0; }
+#domain-toolbar button { min-height: 34px; }
+.eq-plot { position: relative; background: var(--panel); border-radius: 8px; overflow: hidden; touch-action: none; }
+#domain-canvas { display: block; width: 100%; height: clamp(230px, 48vh, 410px); }
+#domain-points { position: absolute; inset: 0; pointer-events: none; }
+.eq-point { position: absolute; display: grid; place-items: center; width: 26px; min-height: 26px; padding: 0; border: 0; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: auto; cursor: grab; }
+.eq-point::after { content: ''; display: block; width: 11px; height: 11px; border: 2px solid var(--accent); border-radius: 50%; background: var(--surface); box-shadow: 0 0 0 2px var(--panel); }
+.eq-point[aria-pressed="true"]::after { background: var(--accent); box-shadow: 0 0 0 4px #9ee1cd34; }
+.eq-point:active { cursor: grabbing; }
+.domain-plot-caption { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: space-between; margin: 8px 0 10px; font-size: 12px; color: var(--muted); }
+.point-controls { display: grid; grid-template-columns: minmax(140px, 2fr) repeat(3, minmax(100px, 1fr)); gap: 8px 12px; margin: 0; }
+.point-controls label { grid-template-columns: minmax(0, 1fr); align-content: start; padding: 0; gap: 4px; }
+.point-controls :is(select, input), .domain-preset-actions input { min-width: 0; width: 100%; height: 34px; margin: 0; color: var(--text); background-color: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.point-controls input, .domain-preset-actions input { padding: 4px 8px; }
+.point-actions { grid-column: 1 / -1; display: flex; gap: 7px; }
+.domain-presets { padding-inline: 14px; }
+.domain-presets label { font-size: 12px; }
+.domain-preset-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0 3px; }
+.domain-preset-actions input { flex: 1 1 170px; }
+#domain-status { color: var(--accent); font-size: 12px; margin-top: 8px; }
+@media (max-width: 630px) {
+  .point-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 360px) {
+  .domain-heading { gap: 7px; }
+  .domain-heading h1 { font-size: 17px; }
+  .domain-heading button { padding-inline: 5px; font-size: 11px; }
+}

@@ -4,14 +4,26 @@ import { mountChords } from './chords-panel';
 import { mountSavedPresets } from './saved-presets-panel';
 import { applySavedPreset, type SavedPreset } from './saved-presets';
 import { mountPersonalization } from './personalization-panel';
+import { mountPanelTabs } from './panel-tabs';
+import { mountReverb } from './reverb-panel';
 import { explicitPreference } from './shared/preferences';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
-import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
-import { stemDelaySeconds } from './shared/stem-pcm';
+import { silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
+import { usesCloudStems } from './shared/deployment';
+import { mountNowPlaying } from './now-playing';
+import { paintRange } from './range-control';
+import { TuningClient } from './tuning-client';
+import { mountCompactEq, mountPitch } from './tuning-panel';
+import { CommandFeedbackError, runNaturalCommand } from './natural-command';
 
-const statusLabel = document.querySelector<HTMLParagraphElement>('#status')!;
+mountPanelTabs();
+
+const nowPlaying = mountNowPlaying();
 const chords = mountChords(document.querySelector<HTMLElement>('#chords')!);
-const lyrics = mountLyrics(document.querySelector<HTMLElement>('#lyrics')!, chords.setPlayback);
+const lyrics = mountLyrics(document.querySelector<HTMLElement>('#lyrics')!, (playback, offset) => {
+  nowPlaying.setPlayback(playback);
+  chords.setPlayback(playback, offset);
+});
 const stopButton = document.querySelector<HTMLButtonElement>('#stop')!;
 const meter = document.querySelector<HTMLMeterElement>('#meter')!;
 const inputStatus = document.querySelector<HTMLParagraphElement>('#input-status')!;
@@ -40,11 +52,20 @@ const personalization = mountPersonalization(document.querySelector<HTMLElement>
     feedback.textContent = 'Personalization changed. Submit the prompt again.';
   }
 });
+const reverb = mountReverb(document.querySelector<HTMLElement>('#audio-effects')!, patch => {
+  if (status.phase === 'capturing') void command({ type: 'SET_REVERB', sessionId: status.session.id, patch });
+}, cancelInterpretation);
+const tuning = new TuningClient(message => { feedback.textContent = message; }, cancelInterpretation);
+mountPitch(document.querySelector<HTMLElement>('#pitch-control')!, tuning);
+mountCompactEq(document.querySelector<HTMLElement>('#equalizer')!, tuning, message => { feedback.textContent = message; });
+tuning.subscribe(() => updateApply());
+
+document.querySelector<HTMLElement>('#cloud-stem-note')!.hidden = !usesCloudStems();
 
 function updateApply(): void {
-  applyButton.disabled = status.phase !== 'capturing' || stopping || commandPending
+  applyButton.disabled = status.phase !== 'capturing' || stopping || commandPending || tuning.busy
     || interpretation !== undefined || Object.keys(queuedEdits).length > 0 || !promptInput.value.trim();
-  savedPresets.setCaptureReady(status.phase === 'capturing' && !stopping && !commandPending
+  savedPresets.setCaptureReady(status.phase === 'capturing' && !stopping && !commandPending && !tuning.busy
     && !interpretation && !Object.keys(queuedEdits).length
     && status.stem.phase !== 'loading' && status.stem.phase !== 'buffering');
 }
@@ -58,7 +79,7 @@ function cancelInterpretation(): void {
 function renderMeter(features: AudioFeatures): void {
   const capture = status.phase === 'capturing' ? status : undefined;
   meter.value = capture && !capture.session.muted && !capture.outputPaused ? Math.sqrt(features.rms) : 0;
-  inputStatus.textContent = capture?.outputPaused ? 'Audio output paused. Click MoodShift on the source tab to retry.'
+  inputStatus.textContent = capture?.outputPaused ? 'Audio paused. Click MoodShift on the playing tab to resume.'
     : capture?.session.muted ? 'Source tab muted.'
     : capture && features.isSilent ? 'Paused or silent input.' : '';
 }
@@ -68,7 +89,7 @@ function displayValue(value: number, unit: string): string {
   return `${Number(value.toFixed(1))} ${unit}`;
 }
 
-const sliders = effectKeys.map(key => {
+const sliders = effectKeys.filter(key => key !== 'reverbMix').map(key => {
   const spec = effectSpecs[key];
   const label = document.createElement('label');
   const text = document.createElement('span');
@@ -84,6 +105,7 @@ const sliders = effectKeys.map(key => {
   label.append(text, value, input);
   controls.append(label);
   input.addEventListener('input', () => {
+    paintRange(input);
     cancelInterpretation();
     queuedEdits[key] = input.valueAsNumber;
     updateApply();
@@ -95,16 +117,29 @@ const sliders = effectKeys.map(key => {
   return { key, input, value };
 });
 
-for (const [name, patch] of [...Object.entries(presets), ['Reset', neutralEffects] as const]) {
+const quickPresets = ['Dreamy', 'Warm', 'Bass Boost', 'Underwater'];
+const presetEmojis: Record<string, string> = { Dreamy: '🌙', Warm: '☀️', 'Bass Boost': '🔊', Underwater: '🌊' };
+const morePresets = document.querySelector('#other-presets')!;
+const presetButtons = [...Object.entries(presets), ['Reset', neutralEffects] as const].map(([name, patch]) => {
   const button = document.createElement('button');
   button.type = 'button';
-  button.textContent = name;
+  button.dataset.audioPreset = name;
+  const emoji = presetEmojis[name];
+  if (emoji) {
+    const icon = document.createElement('span');
+    icon.textContent = emoji;
+    icon.setAttribute('aria-hidden', 'true');
+    icon.className = 'preset-emoji';
+    button.append(icon, name);
+    button.setAttribute('aria-label', name);
+  } else button.textContent = name;
   button.addEventListener('click', () => {
     clearEdits();
     applyLocal(patch);
   });
-  presetGroup.append(button);
-}
+  (quickPresets.includes(name) ? presetGroup : morePresets).append(button);
+  return { button, patch, name };
+});
 
 function clearEdits(): void {
   clearTimeout(editTimer);
@@ -125,6 +160,7 @@ function applyLocal(patch: EffectPatch): void {
 for (const button of monitorButtons) {
   button.addEventListener('click', () => {
     if (status.phase !== 'capturing') return;
+    cancelInterpretation();
     const monitor = button.dataset.mode as MonitorMode;
     void command({ type: 'SET_MONITOR', sessionId: status.session.id, monitor });
   });
@@ -151,12 +187,21 @@ function render(next: CaptureStatus): void {
     feedback.textContent = '';
   }
   status = next;
+  tuning.accept(next);
+  nowPlaying.setStatus(next);
+  chords.setCapture(nextId);
   lyrics.setSource(next.phase === 'capturing' ? next.session : undefined);
+  lyrics.setTiming(next.phase === 'capturing' ? next.audioTiming : undefined);
   updateApply();
   stopButton.disabled = next.phase !== 'capturing' || stopping;
   const enabled = !stopButton.disabled && !presetApplying;
+  reverb.render(next, enabled);
   controls.disabled = !enabled;
-  for (const button of presetGroup.querySelectorAll('button')) button.disabled = !enabled;
+  for (const { button, patch, name } of presetButtons) {
+    button.disabled = !enabled;
+    if (name !== 'Reset') button.setAttribute('aria-pressed', String(next.phase === 'capturing'
+      && effectKeys.every(key => (queuedEdits[key] ?? next.effects[key]) === patch[key])));
+  }
   for (const button of monitorButtons) {
     button.disabled = !enabled;
     button.setAttribute('aria-pressed', String(button.dataset.mode === (next.phase === 'capturing' ? next.monitor : 'modified')));
@@ -168,39 +213,34 @@ function render(next: CaptureStatus): void {
   }
   switch (stem?.phase) {
     case 'loading': stemLabel.textContent = 'Connecting to the local model…'; break;
-    case 'buffering': stemLabel.textContent = 'Buffering stem audio…'; break;
+    case 'buffering': stemLabel.textContent = 'Preparing your mix… The song will keep playing.'; break;
     case 'active':
       stemLabel.textContent = next.phase === 'capturing' && next.monitor === 'original'
-        ? 'Original · Live mix. Modified resumes the delayed stem.'
-        : `Active · Audio trails video by about ${stemDelaySeconds} s.`;
+        ? 'Playing the original mix.' : 'Your separated mix can play a few seconds behind the video.';
       break;
-    case 'unavailable': stemLabel.textContent = `Unavailable · ${stem.message}`; break;
+    case 'unavailable': stemLabel.textContent = 'Couldn’t separate the audio. Full Mix is still playing.'; break;
     default: stemLabel.textContent = '';
   }
   const effects = next.phase === 'capturing' ? next.effects : neutralEffects;
   for (const { key, input, value } of sliders) {
     const setting = queuedEdits[key] ?? effects[key];
     input.value = String(setting);
+    paintRange(input);
     value.textContent = displayValue(setting, effectSpecs[key].unit);
   }
   renderMeter(next.phase === 'capturing' ? next.features : silentFeatures);
-  switch (next.phase) {
-    case 'ready': statusLabel.textContent = 'Ready · Click MoodShift on the tab you want to hear.'; break;
-    case 'starting': statusLabel.textContent = `Capturing… · ${next.source.title}`; break;
-    case 'capturing': statusLabel.textContent = `Listening to this tab · ${next.session.title}`; break;
-    case 'error': statusLabel.textContent = `Error · ${next.message}`; break;
-  }
+
 }
 
 async function readCapture() {
-  if (status.phase !== 'capturing' || commandPending || stopping || interpretation || Object.keys(queuedEdits).length) {
+  if (status.phase !== 'capturing' || commandPending || stopping || interpretation || tuning.busy || Object.keys(queuedEdits).length) {
     throw new Error('Wait for the current audio change to finish.');
   }
   const sessionId = status.session.id;
   const reply = await toWorker({ type: 'GET_STATUS' });
   if (!reply.ok || reply.status.phase !== 'capturing' || reply.status.session.id !== sessionId
     || status.phase !== 'capturing' || status.session.id !== sessionId || commandPending || stopping
-    || interpretation || Object.keys(queuedEdits).length) {
+    || interpretation || tuning.busy || Object.keys(queuedEdits).length) {
     throw new Error('Select a tab and wait for the current audio change to finish.');
   }
   return reply.status;
@@ -219,7 +259,8 @@ async function restorePreset(preset: SavedPreset): Promise<string> {
     if (!current()) throw new Error('Preset application was superseded.');
     refreshId++;
     render(result.status);
-    return result.limitation ? `Effects and monitor applied. Stem unavailable · ${result.limitation}` : `Applied ✓ · ${preset.name}`;
+    if (result.limitation) console.warn('MoodShift preset stem unavailable', result.limitation);
+    return result.limitation ? 'Effects applied. The separated mix is unavailable right now.' : `Applied ✓ · ${preset.name}`;
   } finally {
     if (current()) {
       presetApplying = false;
@@ -230,37 +271,29 @@ async function restorePreset(preset: SavedPreset): Promise<string> {
   }
 }
 
-async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, detail = '', stemMode?: StemMode): Promise<void> {
+async function command(message: Extract<WorkerCommand, { type: 'APPLY_EFFECTS' | 'SET_STEM' | 'SET_REVERB' | 'SET_MONITOR' | 'STOP' }>): Promise<void> {
   const id = ++commandId;
   commandPending = true;
   updateApply();
   refreshId++;
-  if (message.type === 'APPLY_EFFECTS' || message.type === 'SET_STEM') feedback.textContent = 'Applying…';
+  if (message.type === 'APPLY_EFFECTS' || message.type === 'SET_STEM' || message.type === 'SET_REVERB') feedback.textContent = 'Applying…';
   try {
-    let reply = await toWorker(message);
+    const reply = await toWorker(message);
     if (id !== commandId) return;
     if (!reply.ok) throw new Error(reply.message);
-    if (message.type === 'APPLY_EFFECTS' && stemMode && reply.status.phase === 'capturing') {
-      reply = await toWorker({
-        type: 'SET_STEM', mode: stemMode, sessionId: message.sessionId, baseRevision: reply.status.revision,
-      });
-      if (id !== commandId) return;
-      if (!reply.ok) {
-        feedback.textContent = `Effects updated. Stem unavailable · ${reply.message}`;
-        void refresh();
-        return;
-      }
-    }
     refreshId++;
     render(reply.status);
-    if ((message.type === 'APPLY_EFFECTS' || message.type === 'SET_STEM')
+    if ((message.type === 'APPLY_EFFECTS' || message.type === 'SET_STEM' || message.type === 'SET_REVERB')
       && reply.status.phase === 'capturing' && reply.status.session.id === message.sessionId) {
-      feedback.textContent = detail ? `Applied ✓ · ${detail}` : 'Applied ✓';
+      feedback.textContent = 'Applied ✓';
     }
   } catch (error) {
     if (id !== commandId) return;
     stopping = false;
-    feedback.textContent = `Error · ${error instanceof Error ? error.message : String(error)}`;
+    console.warn('MoodShift playback control failed', error);
+    feedback.textContent = message.type === 'SET_STEM'
+      ? 'Couldn’t switch mixes. Check that the song is playing and try again.'
+      : 'Couldn’t update playback. Try again on the playing tab.';
     void refresh();
   } finally {
     if (id === commandId) {
@@ -274,8 +307,12 @@ async function refresh(): Promise<void> {
   const id = ++refreshId;
   try {
     const reply = await toWorker({ type: 'GET_STATUS' });
-    if (id === refreshId) render(reply.ok ? reply.status : { phase: 'error', message: reply.message });
-  } catch {
+    if (id === refreshId) {
+      if (!reply.ok) console.warn('MoodShift status error', reply.message);
+      render(reply.ok ? reply.status : { phase: 'error', message: 'Reopen MoodShift to reconnect.' });
+    }
+  } catch (error) {
+    console.warn('MoodShift status unavailable', error);
     if (id === refreshId) render({ phase: 'error', message: 'Reopen MoodShift to reconnect.' });
   }
 }
@@ -291,14 +328,17 @@ stopButton.addEventListener('click', () => {
 });
 
 promptInput.addEventListener('input', updateApply);
+document.querySelector('#voice-command')!.addEventListener('click', () => {
+  void toWorker({ type: 'OPEN_VOICE' }).then(reply => {
+    if (!reply.ok) feedback.textContent = reply.message;
+  }).catch(() => { feedback.textContent = 'Couldn’t open voice commands.'; });
+});
 promptInput.addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     form.requestSubmit();
   }
 });
-
-class GeminiUnavailable extends Error {}
 
 form.addEventListener('submit', async event => {
   event.preventDefault();
@@ -310,71 +350,21 @@ form.addEventListener('submit', async event => {
     if (promptInput.value.trim() === prompt && !interpretation) feedback.textContent = message;
     return;
   }
-  const { session, effects, revision, features, outputPaused } = status;
-  const direct = directStemIntent(prompt);
-  if (direct === 'unsupported') {
-    feedback.textContent = 'Unsupported · Beat, drum and bass isolation require separate stems.';
-    return;
-  }
-  if (direct) {
-    await command({ type: 'SET_STEM', sessionId: session.id, mode: direct });
-    return;
-  }
+  const sessionId = status.session.id;
   const request = { id: crypto.randomUUID(), controller: new AbortController() };
   interpretation = request;
   updateApply();
   feedback.textContent = 'Interpreting…';
-  const deadline = setTimeout(() => request.controller.abort(), 15_000);
   try {
-    const response = await fetch('http://127.0.0.1:8787/api/interpret', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt, currentEffects: effects,
-        audioFeatures: session.muted || outputPaused ? silentFeatures : features,
-        personalization: personalization.context(),
-      }),
-      signal: request.controller.signal,
-    });
-    const body = await response.json();
+    const result = await runNaturalCommand(prompt, { sessionId, signal: request.controller.signal,
+      applying: () => { feedback.textContent = 'Applying…'; } });
     if (interpretation?.id !== request.id) return;
-    if (!response.ok) {
-      const detail = typeof body?.error === 'string' ? body.error.slice(0, 240) : 'Check the local proxy.';
-      if (response.status === 504) throw new Error('Gemini timed out. Try again.');
-      if (response.status >= 500 || response.status === 429) throw new GeminiUnavailable(detail);
-      throw new Error(detail);
-    }
-    const result = parseInterpretation(body, effects);
-    const detail = [result.summary, result.unsupported.length ? `Unsupported · ${result.unsupported.join(', ')}` : '']
-      .filter(Boolean).join(' ');
-    if (result.mode === 'unsupported') {
-      feedback.textContent = detail;
-      return;
-    }
-    if (result.mode === 'patch' && Object.keys(result.patch).length === 0) {
-      if (result.stemMode) {
-        await command({ type: 'SET_STEM', sessionId: session.id, mode: result.stemMode, baseRevision: revision }, detail);
-      } else feedback.textContent = detail;
-      return;
-    }
-    await command({
-      type: 'APPLY_EFFECTS',
-      sessionId: session.id,
-      baseRevision: revision,
-      patch: result.mode === 'reset' ? neutralEffects : result.patch,
-    }, detail, result.stemMode);
+    feedback.textContent = result.message;
+    if (result.status) void refresh();
   } catch (error) {
     if (interpretation?.id !== request.id) return;
-    if (request.controller.signal.aborted) {
-      feedback.textContent = 'Error · Gemini timed out. Try again.';
-    } else if (error instanceof TypeError || error instanceof GeminiUnavailable) {
-      const detail = error instanceof GeminiUnavailable ? error.message : 'Start the local proxy with npm run dev:server.';
-      feedback.textContent = `Offline · Gemini unavailable. Presets and manual controls still work. ${detail}`;
-    } else {
-      feedback.textContent = `Error · ${error instanceof Error ? error.message : 'Invalid Gemini reply.'}`;
-    }
+    feedback.textContent = error instanceof CommandFeedbackError ? error.message : 'Couldn’t apply that request. Try describing the sound again.';
   } finally {
-    clearTimeout(deadline);
     if (interpretation?.id === request.id) interpretation = undefined;
     updateApply();
   }
@@ -387,6 +377,7 @@ const meterUpdates = new BroadcastChannel(meterChannel);
 meterUpdates.addEventListener('message', (event: MessageEvent<MeterUpdate>) => {
   if (status.phase === 'capturing' && status.session.id === event.data.sessionId) {
     status.features = event.data.features;
+    lyrics.setTiming(event.data.audioTiming);
     renderMeter(event.data.features);
   }
 });

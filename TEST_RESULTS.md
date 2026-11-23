@@ -84,3 +84,99 @@ November 14, 2026 · Windows · Node.js 22.20.0 · Chrome 157.0.8103.52
 | Supermemory v5 SDK and Chrome controls | PASS (automated) | SDK calls used mock HTTP responses and verified the namespace, opt-in lookup, distinct scope, write and view, remote deletion acknowledgment, no-key fallback, upstream errors and timeouts. Chrome exercised opt-in/out, both explicit save paths, view and clear. The running proxy returned an actionable HTTP 503 for memory without a key. |
 | Real Supermemory add, profile, and delete | NOT RUN | No `SUPERMEMORY_API_KEY` was available. |
 | Human listening, diagram usability, and timing by ear | NOT RUN | Run the Chrome and stem listening checklists in [README.md](README.md). macOS stems and CPU-only live stems retain the hardware limitations recorded above. |
+
+Cloud-build and deployment preparation checks are recorded in [CLOUD_DEPLOY_STATUS.md](CLOUD_DEPLOY_STATUS.md).
+
+## Local preferences and Home / Advanced
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Typecheck, development build, and production build | PASS (automated) | `npm run typecheck`, `npm run build:extension`, and `npm run build:extension -- --mode production`. |
+| Full Vitest suite | PASS (automated) | 106 tests, including local preference storage, relevance and limits, the authenticated shared-demo interpretation path, and existing private-owner Supermemory checks. Loopback access was required for the HTTP tests. |
+| Home and Advanced in Chrome | PASS (automated) | Keyboard navigation, preset application in both tabs, preserved prompt processing, one audio session and uninterrupted signal while the panel was closed, and selected-tab recovery on reopen. |
+| Preferences and saved presets in Chrome | PASS (automated) | Local saves, edits, deletions, and opt-out. Preferences, opt-out, and exact audio presets persisted across Chrome restart. Chrome exercised both builds with mocked Gemini and Supermemory. |
+| Active stem in production Chrome with the laptop helper | PASS (automated on retry) | Both stem outputs produced PCM from the local fixture. The active Vocals session survived Home and Advanced navigation on both runs. The first run reported the stem unavailable after pausing. The standalone rerun passed pause/resume, A/B, tab switch, reconnection, and Stop. |
+| Live YouTube listening and live providers on this revision | NOT RUN | In desktop Chrome, open Advanced while playing a YouTube track, try the lyric offset and chord diagrams, and switch tabs while applying a preset and an active stem. On the updated backend, try a broad Gemini prompt with a local preference, then give a conflicting explicit instruction. Check live Supermemory only with a configured private owner or local backend. |
+
+## Local reverb audio effects — November 22, 2026
+
+Branch `feature/reverb-audio-effects` starts directly at `feature/advanced-ui-local-memory` commit `34c01013058d00a49dd94f40a3903d99a62d25dd`. No cancelled mask source or commits were used; existing untracked mask files were left untouched.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Typecheck | PASS (automated) | `npm run typecheck`. |
+| Development and production extension builds | PASS (automated) | Both standard build commands passed; production output is `extension/dist-cloud`. |
+| Full JavaScript suite | PASS (automated) | 112 tests across 12 files, including five new reverb/lease tests and a saved-preset compatibility test. |
+| Existing Python stem regressions | PASS (automated) | Nine tests; no GPU model execution or benchmarking. |
+| Real Chrome offline audio rendering | PASS (automated) | Chrome 157.0.8103.80 rendered actual ConvolverNodes. Disabled reverb reproduced the impulse at the same sample with maximum error 2.98e-9. Dreamy/Hall/Slowed tail energies were 0.007168/0.006144/0.008704 for a 0.2 impulse. A 0.4-second response had no late tail after two seconds; a four-second response did. These are signal checks, not listening ratings. |
+| Local captured audio without a backend | PASS (automated) | Chrome captured the generated WAV fixture and, in the final run, the existing local STAY MP3. All presets, amount, duration, enable/disable, Original/Modified, pause/resume, panel closure/reopening and Stop passed. A tap at the actual output measured RMS 0.003731 while captured-input RMS was zero after pause, verifying a real reverb tail in the extension pipeline. No Gemini requests; one AudioContext per capture; no convolver before enable; wet nodes disconnected after disable. |
+| My Presets | PASS (automated) | Customized amount/duration/style saved to local storage, another preset applied, and the saved settings restored through an ACK. Legacy records remain valid. |
+| Instrumental/Vocals/Full Mix with reverb | PASS (automated with a protocol fixture) | The real stem worker, transport and AudioWorklet path used an isolated loopback test server emitting half-gain vocal PCM. Switching all three modes preserved reverb settings. This does not verify actual AI source-separation quality. |
+| Live YouTube slowdown and restoration | PASS (automated) | On the supplied STAY video, prior rate 1.25× became 1.0625×. Renewal and panel closure preserved it. Changing preset, disabling reverb, Stop, and switching capture back to the local tab restored 1.25×. The new source started neutral and Stop released it. |
+| Unsupported-source slowdown | PASS (automated) | Local playback retained reverb and explicitly reported YouTube-only speed support. No simulated slowdown. |
+| User override, unavailable player and crashed-extension lease expiry | PASS (unit tests) | Explicit player speed changes are preserved; refused/unsupported rate changes do not claim slowing; a seven-second expired lease restores the original rate. |
+| Human listening, perceived clicks, physical latency and long-session GPU separation with reverb | NOT RUN | Listen to each preset, adjust intensity/duration during music, and compare Original with reverb enabled/disabled. Start the actual worker separately for a sustained Vocals/Instrumental listening check. |
+| macOS and speed control outside YouTube | NOT RUN / unsupported | macOS was unavailable. Other sources keep reverb but have no slowdown integration. |
+
+The first browser attempts exposed test-harness issues with repeated CDP variable declarations, loading a reopened panel, activating the source before triggering its toolbar action, and sending Stop through the real panel. These were corrected; the final full integration run exited successfully. No product failures were suppressed.
+
+Commands, file inventory, architecture, limits and manual steps are in [Reverb audio effects](docs/REVERB_AUDIO_EFFECTS.md). The existing separator model, configuration and buffer lengths are unchanged. No GPU benchmark, cloud deployment or additional dependency was introduced.
+
+## Home and Settings refresh — November 22, 2026
+
+`feature/reverb-audio-effects` was already committed at `d4aaa47` and pushed to its matching branch on `origin`. The local `feature/ui-settings-home-refresh` branch starts directly at that commit.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Builds and typecheck | PASS (automated) | Development and production bundles and `npm run typecheck`. |
+| JavaScript and Python tests | PASS (automated) | 110 JavaScript tests and nine Python stem tests. The new tests cover Home defaults and stored selections, negative and fractional slider fills, domain detection, and artwork URL validation. |
+| Home and Settings in Chrome 157.0.8103.80 | PASS (automated) | Four quick presets, exact preset selection, keyboard tab navigation, slider DSP acknowledgments and fill, Home customization, storage across panel reopen, and access to hidden Home sections from Settings. Switching views kept the same audio session and controls. |
+| Narrow layout | PASS (visual inspection and automated) | Inspected actual extension renders of Home, Settings, and expanded Audio Controls at 320 CSS pixels. Checked horizontal overflow at 320 and 250 CSS pixels. Slimmed the scrollbar after inspection. |
+| Player information and lyrics | PASS (automated) | Real YouTube playback showed the current title, artist and thumbnail. Local captures showed a generic music icon and cleared stale artwork when switching tabs. Live LRCLIB lyrics passed Home placement, pause, seek, playback rate, offset, reopening, and YouTube in-tab navigation. |
+| Original branding | PASS (automated) | Chrome decoded the original logo at all four manifest sizes and rendered the icon on `chrome://extensions`. Both builds contain the icon files and point the toolbar action at the 16 and 32 pixel variants. |
+| Reverb, stem routing, and local settings | PASS (automated) | Real captured audio and reverb tail, saved presets and local sound preferences across Chrome restart, local preference opt-out, YouTube slowdown/restoration, and Instrumental/Vocals/Full Mix via the real AudioWorklet path with a PCM fixture. |
+| Production access | PASS (automated with fixtures) | Chrome reused a provisioned test credential. Server tests rejected invalid bearer tokens, disallowed origins, and requests over quota. The retired memory endpoint returned 404 to an authenticated request. |
+| Physical toolbar, live Spotify/SoundCloud, and GPU separation | NOT RUN | Headless Chrome verifies icon wiring and decoding rather than the visible toolbar. Platform detection for Spotify and SoundCloud is covered by unit tests. Stem protocol coverage used a fixture. |
+
+The implementation is in the side-panel HTML, CSS and TypeScript, `panel-tabs.ts`, `shared/home-layout.ts`, `now-playing.ts`, `shared/track.ts`, and the existing audio, lyrics, saved-presets, and preferences adapters. Branding comes from the original PNG restored under `extension/assets`, plus the four icon sizes copied by `scripts/build-extension.mjs`. The server and package manifest changes remove the Supermemory SDK, routes and configuration. The updated cloud access instructions are in [Vercel setup](docs/DEPLOY_VERCEL.md#provision-the-installed-extension). Chrome and regression checks live in `tests/chrome-smoke.mjs`, `tests/reverb-browser.mjs`, `tests/ui-settings.test.ts`, and the existing cloud tests.
+
+To try the update, run `npm run build:extension`, reload your unpacked installation in `chrome://extensions`, refresh an open YouTube page, and click MoodShift on the playing tab. Open **Settings → Customize Home** to change which sections appear. Production users can rebuild with `npm run build:extension -- --mode production` and reload their existing production installation.
+
+## Independent pitch and interactive EQ — November 22, 2026
+
+The Home and Settings update was already committed at `329dbc5`. It was pushed to `origin/feature/ui-settings-home-refresh` before the Pitch and Equalizer edits began.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Dependency install, development and production builds, and typecheck | PASS (automated) | Installed Signalsmith Stretch 1.3.2. Both extension build modes include the locally packaged AudioWorklet, editor, and notice. `npm run typecheck` exited successfully. |
+| JavaScript and stem transport tests | PASS (automated) | `npm test` passed 118 tests in 13 files. Nine Python stem tests passed. New tests cover value validation, feature isolation, band response and limits, and full-mix preset compatibility. |
+| Local proxy | PASS (automated) | `npm run dev:server` started on `127.0.0.1:8787`. `GET /health` returned HTTP 200. |
+| Stereo pitch frequency, duration, and bypass | PASS (automated in Chrome 157.0.8103.80) | Generated 440 and 660 Hz stereo channels rendered at −3 and +3 semitones at 44.1 and 48 kHz. All frequencies were within 6 cents of the targets. The two-second bursts measured 1.979–1.990 s at the RMS threshold. The worklet reported 100 ms latency at both rates. Zero pitch and flat EQ produced sample-exact stereo output. |
+| Actual EQ response | PASS (automated in Chrome) | The plot calculation agreed with Chrome’s `getFrequencyResponse` to within 0.000004 dB across the sampled frequencies. The rendered filter cascade with alternating boosts and cuts plus a custom point and headroom matched the plot within 0.0013 dB at the measured band centers. |
+| Live controls and Domain Expansion | PASS (automated and visually inspected) | Live stereo shifted while the media rate stayed at 1.0. Pitch bypass, re-enable, and reset kept adjacent sample changes below 0.06 on the captured tones. The editor added, dragged, numerically edited, deleted, stored, and recalled points with exact frequency, gain, and Q. Both views stayed in sync. The spectrum reacted to audio and paused when the editor closed or reduced motion was enabled. Inspected actual compact renders at 320 CSS pixels and the larger editor at 940 pixels. |
+| Pitch, EQ, reverb and stems | PASS (automated in Chrome) | Captured output remained finite and audible through Pitch + EQ, Pitch + Reverb, EQ + Reverb, and all three together. The local PCM worker exercised Vocals + Pitch + EQ and Instrumental + EQ + Reverb through the real stem worklet. Timing reported 2.8 s for the test stem buffer and 2.9 s with active pitch. Original with all three disabled returned to the dry stereo frequencies. |
+| Closed-panel stereo playback | PASS (automated in Chrome) | The 120-second check sampled shifted stereo output with Pitch and EQ active while the panel was closed. The capture retained one context and one pitch worklet. Offscreen JavaScript heap after forced GC went from 1,112,336 to 1,114,280 bytes during this run. |
+| Source switches and profile persistence | PASS (automated in Chrome) | Pause/resume and switching to another playing tab retained the saved Pitch and EQ. Closing and reopening the panel and editor kept the same active session. Restarting Chrome retained the selected custom curve, every point and Q value, and Home visibility. The four quick preset emoji labels rendered. |
+| Production-format extension and YouTube | PASS (automated in Chrome) | The isolated production-format build loaded its local WASM and passed the tuning checks with its restricted CSP. The development build captured audio from a real YouTube music tab with Pitch and EQ active at media rate 1.0. Playback advanced while the panel was closed and the tab backgrounded. |
+| Existing Chrome features | PASS (automated in Chrome) | Reverb, Home settings, saved full presets, local sound preferences, live LRCLIB lyrics, and the documented Songle chord timeline passed their existing browser checks. |
+| Physical output and separation quality | NOT RUN | Listening for voice character, percussion artifacts at larger shifts, and perceived bypass transitions requires a desktop Chrome listening check. The stem integration used a deterministic PCM worker. |
+
+Repeat the tuning checks with `MOODSHIFT_TUNING_TEST=1` using the command in the [Chrome smoke test instructions](README.md#repeat-the-browser-smoke-test). For listening verification, reload MoodShift in Chrome, refresh a playing music tab, and apply −3 then +3 semitones from **Settings → Pitch Control**. Open **Home → Equalizer → ⛶ Domain Expansion**, adjust a band, and save a curve. Close and reopen the editor and panel while playback continues. Try Instrumental and Vocals if your existing stem helper is available.
+
+## Recovered playback and natural-language controls — November 22, 2026
+
+The checkout is `feature/ui-settings-home-refresh`. The Git graph, reflog, commit parents, and file comparisons identify `feature/local-precomputed-mask-poc` at `1f0d0f3` as a child of `feature/mood-scenes` at `b820c2b`. Both the current branch and the mask ancestry share `34c0101`, where `feature/universal-song-lyrics-sync` and `feature/advanced-ui-local-memory` point. Commit `3096892` was the first missing commit after that base. It contains the cross-player code plus some presentation and deployment changes. The focused port restores player metadata, lyrics and timed captions, device and processing timing, and local chord estimates. The later Mood Scenes UI, mask work, and the retired personalization and provisioning interfaces were excluded. The earlier karaoke, Songle, cloud deployment, and reverb branches were also checked for existing equivalents.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Typecheck, both extension builds, JavaScript and Python | PASS (automated) | TypeScript, development and configured production builds, 134 JavaScript tests in 15 files, and nine Python stem tests. |
+| Local proxy and native ESM cloud entry | PASS (automated) | The Express entry compiled with NodeNext and started under plain Node.js. `/health` returned HTTP 200 and `X-MoodShift-Controls: 2`. The v2 route rejected an unauthenticated cloud request. An isolated production Chrome build reached the v2 path with test authentication. |
+| Live Gemini and Chrome | PASS (automated with the configured provider) | Gemini 3.1 Flash-Lite returned the validated −2 semitone and Concert Hall actions. In Chrome, a live request moved the active pitch worklet from −1 to −3 semitones while retaining the existing reverb and a media rate of 1.0. Earlier live attempts hit the existing timeout and left playback running. |
+| Recovered player support | PASS (automated in Chrome and unit fixtures) | Real Chrome capture of a loopback audio player used Media Session title and artist, native timed captions, and live detection of C major. Unit fixtures cover Spotify, YouTube Music, SoundCloud, recording selection, seek and pause timing, and stale lookups. |
+| Existing YouTube and tuning regressions | PASS (automated in Chrome) | Real YouTube capture, live LRCLIB lyrics and Songle timeline, Home visibility, local preferences, saved presets and restarts passed. Stereo pitch, Domain Expansion, EQ response, and stem timing also passed, along with Slowed + Reverb and restoration of the original YouTube playback rate. |
+| Shared text and voice actions | PASS (automated in Chrome with fixtures) | Manual pitch appeared in the next Gemini request. Validated plans changed pitch, reverb, EQ points and Q, presets, Home and lyrics preferences, and reset settings in the live graph. An Instrumental request reached the stem worklet with reverb and the existing 2.8 s PCM fixture buffer. |
+| Voice window and microphone lifecycle | PASS (automated in Chrome with simulated transcripts) | Chrome registered Ctrl+Shift+Y. The side-panel button opened the same voice window. Checks covered explicit start, denial, cancellation during recognition and interpretation, blur, closure, and continued audio on the original capture. |
+| Native recognition and physical keyboard | PARTIAL | Native Chrome honored a denied microphone permission. Its speech service misrecognized one generated WAV and reached Gemini. A second generated sample produced no transcript. The desktop computer-use runtime failed to initialize, so the physical shortcut and an end-to-end spoken command using a real microphone still need checking. |
+| Platform and hardware verification | NOT RUN | Live Spotify, SoundCloud, and YouTube Music accounts and GPU separation quality. The non-YouTube Chrome player and stem PCM fixture tested the application paths. |
+
+To repeat the voice check, reload MoodShift, capture a playing tab, and press **Ctrl+Shift+Y**. Click **Listen**, allow the microphone, then say “Lower pitch by two semitones and add Concert Hall reverb.” Check Pitch Control and Reverb while the music continues. Close the window or cancel a second request and confirm that the existing capture keeps running. For a cloud installation, follow the [command API upgrade](docs/DEPLOY_VERCEL.md#upgrade-an-existing-api-to-command-version-2).

@@ -1,8 +1,11 @@
 import { stemHeaderBytes, stereoFrameBytes, type PCMMessage, type StemWorkerStart } from './shared/stem-pcm';
+import { deployment, usesCloudStems } from './shared/deployment';
+import { stemStartMessage } from './api-client';
 
 self.onmessage = ({ data }: MessageEvent<StemWorkerStart>) => {
-  const { port, sampleRate, sessionId } = data;
-  const socket = new WebSocket('ws://127.0.0.1:8788');
+  const { port, sampleRate, sessionId, demoCode } = data;
+  const hello = stemStartMessage(sampleRate, sessionId, deployment, demoCode);
+  const socket = new WebSocket(deployment.stemWsUrl);
   socket.binaryType = 'arraybuffer';
   let ready = false;
   let ended = false;
@@ -17,9 +20,9 @@ self.onmessage = ({ data }: MessageEvent<StemWorkerStart>) => {
     port.close();
   }
 
-  socket.onopen = () => socket.send(JSON.stringify({ type: 'start', sampleRate, sessionId }));
-  socket.onerror = () => fail('Start the local stem helper for this extension.');
-  socket.onclose = event => fail(event.reason || 'Local stem helper disconnected.');
+  socket.onopen = () => socket.send(JSON.stringify(hello));
+  socket.onerror = () => fail(usesCloudStems() ? 'Could not connect to the cloud stem worker.' : 'Start the local stem helper for this extension.');
+  socket.onclose = event => fail(event.reason || 'Stem helper disconnected.');
   socket.onmessage = ({ data: response }: MessageEvent<string | ArrayBuffer>) => {
     if (typeof response === 'string' && !ready) {
       try {
@@ -32,7 +35,7 @@ self.onmessage = ({ data }: MessageEvent<StemWorkerStart>) => {
         port.postMessage({ type: 'start' } satisfies PCMMessage);
         self.postMessage({ type: 'buffering' });
       } catch {
-        fail('The local helper could not establish a stem session.');
+        fail('The helper could not establish a stem session.');
       }
       return;
     }
@@ -52,7 +55,7 @@ self.onmessage = ({ data }: MessageEvent<StemWorkerStart>) => {
       self.postMessage(data);
     } else if (data.type === 'capture') {
       if (!ready || socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > 256 * 1024) {
-        fail('The local helper is falling behind.');
+        fail('The stem helper is falling behind.');
         return;
       }
       socket.send(data.buffer);

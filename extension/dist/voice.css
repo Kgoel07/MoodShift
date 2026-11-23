@@ -1,0 +1,7 @@
+.voice-command { max-width: 360px; padding: 16px; margin: 0 auto; }
+.voice-command .setting-help { margin: 8px 0 14px; }
+.voice-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+#voice-listen { color: #112b25; background: var(--accent); border-color: var(--accent); font-weight: 700; }
+#voice-status { margin: 12px 0 4px; }
+#voice-status[data-listening] { color: var(--accent); }
+#voice-transcript { color: var(--muted); overflow-wrap: anywhere; }

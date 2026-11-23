@@ -1,0 +1,27 @@
+[Unit]
+Description=MoodShift CUDA stem worker (loopback)
+After=network.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=moodshift-stem
+Group=moodshift-stem
+WorkingDirectory=/opt/moodshift-stem
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=CUDA_CACHE_PATH=/var/cache/moodshift-stem
+CacheDirectory=moodshift-stem
+EnvironmentFile=/etc/moodshift-stem.env
+ExecStart=/opt/moodshift-stem/.venv/bin/python -m scripts.stem_helper --device 0 --model /opt/moodshift-stem/assets/vocals.onnx
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -10,5 +10,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["extension/src/**/*.ts", "server/src/**/*.ts", "tests/**/*.ts"]
+  "include": ["index.ts", "extension/src/**/*.ts", "server/src/**/*.ts", "tests/**/*.ts"]
 }
