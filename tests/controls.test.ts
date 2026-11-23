@@ -81,6 +81,42 @@ describe('MoodShift command registry', () => {
   });
 });
 
+it('accepts bounded microphone audio and validates the separately transcribed settings changes', async () => {
+  const result = { actions: [set('pitch.semitones', -2)], summary: 'Lowered the pitch.', unsupported: [], transcript: 'Lower the pitch by two.' };
+  const completion = (reply: typeof result) => Response.json({ candidates: [{ finishReason: 'STOP',
+    content: { parts: [{ text: JSON.stringify(reply) }] } }] });
+  const upstream = vi.fn<typeof fetch>(async () => completion(result));
+  const server = createApp({ apiKey: 'test-key', model: 'gemini-3.1-flash-lite' }, upstream).listen(0, '127.0.0.1');
+  try {
+    await once(server, 'listening');
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    expect((await fetch(base + '/health')).headers.get('x-moodshift-voice')).toBe('1');
+    const { effects, ...controls } = state();
+    const audio = { mimeType: 'audio/webm', data: Buffer.from([0x1a, 0x45, 0xdf, 0xa3]).toString('base64') };
+    const post = (clip: typeof audio) => fetch(base + '/api/interpret/voice', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audio: clip, currentEffects: effects,
+        audioFeatures: silentFeatures, controls: { ...controls, savedEq: [], savedAudio: [], youtubeWatch: false } }) });
+    expect((await post({ ...audio, data: 'SGVsbG8=' })).status).toBe(400);
+    expect((await post({ ...audio, data: 'AAAA'.repeat(32_769) })).status).toBe(400);
+    expect(upstream).not.toHaveBeenCalled();
+    const response = await post(audio);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(result);
+    const provider = JSON.parse(String(upstream.mock.calls[0][1]?.body));
+    expect(provider.contents[0].parts[1]).toEqual({ inlineData: audio });
+    expect(JSON.parse(provider.contents[0].parts[0].text)).not.toHaveProperty('audio');
+    expect(provider.generationConfig.responseJsonSchema.required).toContain('transcript');
+
+    upstream.mockResolvedValueOnce(completion({ ...result, transcript: '' }));
+    expect(await (await post(audio)).json()).toMatchObject({ code: 'gemini_response' });
+    upstream.mockResolvedValueOnce(completion({ ...result, actions: [], transcript: '', summary: 'Try another recording.' }));
+    expect(await (await post(audio)).json()).toMatchObject({ actions: [], transcript: '' });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
 it('serves the v2 route through Express and generates Gemini’s schema from the same registry', async () => {
   const result = { actions: [{ control: 'pitch.semitones', operation: 'adjust', value: -2 }, set('reverb.preset', 'hall')],
     summary: 'Lower the pitch and add Concert Hall.', unsupported: [] };

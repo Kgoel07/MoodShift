@@ -4,7 +4,7 @@ Run the stages in order. Use authorized audio for tests. Record the instance typ
 
 ## 1. Vercel API by itself
 
-After deploying the API, run this with your production HTTPS origin and the production extension’s exact origin. This first command checks health, preflight, wrong Origin, and missing code. It makes no Gemini request.
+After deploying the API, run this with your production HTTPS origin and the installed extension’s exact origin. This first command checks the pitch and voice version headers, preflight, wrong Origin, and missing code. It makes no Gemini request.
 
 ```powershell
 node scripts/smoke-cloud-api.mjs https://YOUR-PROJECT.vercel.app chrome-extension://YOUR_EXTENSION_ID
@@ -21,7 +21,7 @@ try {
 }
 ```
 
-Verify HTTP 200 and a bass-only patch that preserves reverb. See [Vercel setup](DEPLOY_VERCEL.md).
+Verify HTTP 200 and a bass-only patch that preserves reverb. Then use the installed extension to try a pitch command in the text box and in the microphone tab. See [Vercel setup](DEPLOY_VERCEL.md).
 
 ## 2. Private SSH GPU link
 

@@ -63,7 +63,7 @@ describe('cloud API deployment', () => {
       expect((await post(base + '/api/interpret', prompt, 'bad')).status).toBe(401);
       const unavailable = await post(base + '/api/interpret', prompt);
       expect(unavailable.status).toBe(503);
-      expect(await unavailable.json()).toEqual({ error: 'Gemini is not configured on this cloud backend.' });
+      expect(await unavailable.json()).toEqual({ error: 'Gemini is not configured on this cloud backend.', code: 'gemini_not_configured' });
       expect((await post(base + '/api/memory', { action: 'view', installationId: owner })).status).toBe(404);
     });
   });

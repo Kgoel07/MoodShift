@@ -180,3 +180,13 @@ The checkout is `feature/ui-settings-home-refresh`. The Git graph, reflog, commi
 | Platform and hardware verification | NOT RUN | Live Spotify, SoundCloud, and YouTube Music accounts and GPU separation quality. The non-YouTube Chrome player and stem PCM fixture tested the application paths. |
 
 To repeat the voice check, reload MoodShift, capture a playing tab, and press **Ctrl+Shift+Y**. Click **Listen**, allow the microphone, then say “Lower pitch by two semitones and add Concert Hall reverb.” Check Pitch Control and Reverb while the music continues. Close the window or cancel a second request and confirm that the existing capture keeps running. For a cloud installation, follow the [command API upgrade](docs/DEPLOY_VERCEL.md#upgrade-an-existing-api-to-command-version-2).
+
+## Gemini and browser microphone compatibility (November 23, 2026)
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Typecheck, extension builds and unit tests | PASS (automated) | Development and production builds ran in isolated directories. `npm run typecheck` passed. `npm test` passed 136 tests across 15 files, including voice request validation and the bounded Gemini 503 retry. |
+| Vercel Express artifact | PASS (automated) | The locally packaged `index.js` started under plain Node.js 22. `/health` returned 200 with both command version headers. The voice route returned 401 without a token. |
+| Microphone permission and recording | PASS (automated) | Chrome 157 and Edge 158 exercised native `getUserMedia` denial and grant and recorded WebM via `MediaRecorder` with a fake input device. Cancellation released input, discarded unsent recordings, and prevented stale updates. A mocked Gemini result changed the settings in the current capture. |
+| Live Gemini 3.5 Flash-Lite | PASS (automated) | The local proxy returned HTTP 200 for both a typed pitch command and synthetic WebM speech. The responses lowered pitch by two semitones and raised bass by 2 dB, respectively. Earlier tests with 3.1 Flash-Lite encountered an upstream 503 and a timeout. |
+| Desktop permissions and live deployment | NOT RUN | The OS microphone prompt and a spoken command with a real microphone still need checking in each target browser. The live production API was checked for health only and did not advertise the pitch or voice endpoints. |

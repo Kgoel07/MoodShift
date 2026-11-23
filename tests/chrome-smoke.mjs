@@ -84,7 +84,8 @@ function launchChrome() {
   const voiceFixture = process.env.MOODSHIFT_TEST_VOICE_WAV;
   const processHandle = spawn(process.env.MOODSHIFT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', [
     '--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
-    ...(voiceFixture ? ['--use-fake-device-for-media-stream', '--use-file-for-fake-audio-capture=' + resolve(voiceFixture)] : []),
+    ...(commands ? ['--use-fake-device-for-media-stream'] : []),
+    ...(voiceFixture ? ['--use-file-for-fake-audio-capture=' + resolve(voiceFixture)] : []),
     '--user-data-dir=' + profile,
     '--remote-debugging-pipe', '--enable-unsafe-extension-debugging', 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true });

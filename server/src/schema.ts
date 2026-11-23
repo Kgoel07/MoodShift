@@ -7,6 +7,7 @@ import { homeSectionKeys } from '../../extension/src/shared/home-layout.js';
 import { lyricOffsetRange } from '../../extension/src/shared/display-settings.js';
 import { validateReverb } from '../../extension/src/shared/reverb.js';
 import { validateTuning } from '../../extension/src/shared/tuning.js';
+import { voiceMaxBytes, voiceMimeTypes } from '../../extension/src/shared/voice-audio.js';
 
 const effectNumbers = Object.fromEntries(effectKeys.map(key => [key, z.number()])) as Record<EffectKey, z.ZodNumber>;
 const patchSchema = z.strictObject(effectNumbers).partial();
@@ -86,6 +87,17 @@ export const controlRequestSchema = requestSchema.extend({
   }),
 });
 export type ControlRequest = Omit<z.output<typeof controlRequestSchema>, 'localPreferences'>;
+export const voiceRequestSchema = controlRequestSchema.omit({ prompt: true }).extend({
+  audio: z.strictObject({
+    mimeType: z.enum(voiceMimeTypes),
+    data: z.string().min(8).max(4 * Math.ceil(voiceMaxBytes / 3)).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+  }).refine(({ mimeType, data }) => {
+    const bytes = Buffer.from(data, 'base64');
+    const signature = mimeType === 'audio/webm' ? '1a45dfa3' : '4f676753';
+    return bytes.length <= voiceMaxBytes && bytes.subarray(0, 4).toString('hex') === signature && bytes.toString('base64') === data;
+  }, 'Invalid voice recording.'),
+});
+export type VoiceRequest = Omit<z.output<typeof voiceRequestSchema>, 'localPreferences'>;
 
 export const controlModelJsonSchema = {
   type: 'object', additionalProperties: false, required: ['actions', 'summary', 'unsupported'],
@@ -107,6 +119,22 @@ export const controlModelJsonSchema = {
 export function parseControlContent(content: string) {
   if (!content || content.length > 4096) throw new Error('Invalid model content length.');
   return parseControlResult(JSON.parse(content));
+}
+
+export const voiceModelJsonSchema = {
+  ...controlModelJsonSchema,
+  required: [...controlModelJsonSchema.required, 'transcript'],
+  properties: { ...controlModelJsonSchema.properties, transcript: { type: 'string' } },
+};
+
+export function parseVoiceContent(content: string) {
+  if (!content || content.length > 4096) throw new Error('Invalid model content length.');
+  const { transcript, ...plan } = JSON.parse(content);
+  const result = parseControlResult(plan);
+  if (typeof transcript !== 'string' || transcript.length > 500 || (!transcript.trim() && result.actions.length)) {
+    throw new Error('Invalid transcript.');
+  }
+  return { ...result, transcript: transcript.trim() };
 }
 
 export function parseModelContent(content: string, current: InterpretRequest['currentEffects']) {

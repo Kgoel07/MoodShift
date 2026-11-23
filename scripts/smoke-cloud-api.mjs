@@ -26,6 +26,8 @@ assert.equal(health.status, 200, 'Expected a successful health check');
 const status = await health.json();
 assert.equal(status.ok, true, 'The API did not report healthy');
 assert.equal(typeof status.aiConfigured, 'boolean');
+assert.equal(health.headers.get('X-MoodShift-Controls'), '2', 'Redeploy the backend with command API v2 before testing pitch');
+assert.equal(health.headers.get('X-MoodShift-Voice'), '1', 'Redeploy the backend with the voice command route');
 console.log('Health is reachable. Gemini key configured:', status.aiConfigured);
 
 const preflight = await request('/api/interpret', {
@@ -40,6 +42,7 @@ const post = (path, body, headers = {}) => request(path, {
   method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
 });
 assert.equal((await post('/api/interpret', {})).status, 401);
+assert.equal((await post('/api/interpret/voice', {})).status, 401);
 assert.equal((await post('/api/interpret', {}, { Origin: 'https://invalid.example' })).status, 403);
 console.log('Expected CORS and unauthorized rejection passed.');
 
