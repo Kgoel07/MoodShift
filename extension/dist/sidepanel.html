@@ -5,16 +5,27 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MoodShift</title>
   <link rel="stylesheet" href="sidepanel.css">
+  <link rel="stylesheet" href="tuning.css">
 </head>
 <body>
   <main>
     <header class="brand">
-      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <img class="brand-mark" src="assets/icon-32.png" alt="" width="28" height="28">
       <h1>MoodShift</h1>
     </header>
 
     <section class="source" aria-label="Audio source">
-      <p id="status" role="status">Ready · Click MoodShift on the tab you want to hear.</p>
+      <div class="track">
+        <div class="track-art" id="track-art" data-platform="tab" aria-hidden="true">
+          <span id="platform-icon"></span>
+          <img id="song-artwork" alt="" width="44" height="44" referrerpolicy="no-referrer" hidden>
+        </div>
+        <div class="track-copy">
+          <p id="track-platform">Now playing</p>
+          <p id="status" role="status">Choose a playing tab</p>
+          <p id="track-artist">Click the MoodShift icon on the tab.</p>
+        </div>
+      </div>
       <meter id="meter" min="0" max="1" value="0" aria-label="Input level"></meter>
       <p id="input-status"></p>
       <p id="stem-status" role="status"></p>
@@ -22,114 +33,159 @@
 
     <div class="panel-tabs" role="tablist" aria-label="MoodShift controls">
       <button id="home-tab" type="button" role="tab" aria-selected="true" aria-controls="home-panel">Home</button>
-      <button id="advanced-tab" type="button" role="tab" aria-selected="false" aria-controls="advanced-panel" tabindex="-1">Advanced</button>
+      <button id="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel" tabindex="-1">Settings</button>
     </div>
     <p id="feedback" role="status"></p>
 
     <section id="home-panel" class="panel-page" role="tabpanel" aria-labelledby="home-tab">
+      <section class="preset-section" aria-labelledby="preset-label">
+        <h2 id="preset-label">Quick Presets</h2>
+        <div id="presets"></div>
+      </section>
       <form id="interpret">
         <label for="prompt">Describe an effect</label>
         <textarea id="prompt" rows="3" maxlength="500" placeholder="Make it warmer and more dreamy" aria-describedby="prompt-help"></textarea>
         <div class="form-actions">
           <span id="prompt-help">Enter to apply · Shift+Enter for a new line</span>
+          <button id="voice-command" type="button" aria-label="Open voice commands" title="Voice command">🎙️</button>
           <button id="apply" type="submit" disabled>Apply</button>
         </div>
       </form>
-      <div id="home-presets">
-        <div id="preset-library">
-          <section class="preset-section" aria-labelledby="preset-label">
-            <h2 id="preset-label">Presets</h2>
-            <div id="presets"></div>
-          </section>
-          <details id="saved-presets">
-            <summary>My Presets</summary>
-            <div class="saved-preset-fields">
-              <label for="saved-preset-list">Saved presets</label>
-              <select id="saved-preset-list"><option value="">No saved presets</option></select>
-              <label for="saved-preset-name">Name</label>
-              <input id="saved-preset-name" type="text" maxlength="64">
-              <label for="saved-preset-description">Description (optional)</label>
-              <input id="saved-preset-description" type="text" maxlength="200">
-            </div>
-            <div class="saved-preset-actions">
-              <button id="saved-preset-save" type="button" disabled>Save Preset</button>
-              <button id="saved-preset-apply" type="button" disabled>Apply Preset</button>
-              <button id="saved-preset-update" type="button" disabled>Update Preset</button>
-              <button id="saved-preset-rename" type="button" disabled>Rename</button>
-              <button id="saved-preset-delete" type="button" disabled>Delete</button>
-            </div>
-            <p id="saved-preset-notice"></p>
-            <p id="saved-preset-status" role="status"></p>
-          </details>
-        </div>
-      </div>
       <div id="monitor" role="group" aria-label="Audio monitor">
         <button type="button" data-mode="original" aria-pressed="false">Original</button>
         <button type="button" data-mode="modified" aria-pressed="true">Modified</button>
       </div>
-      <div id="home-stems">
-        <section id="stem-controls" class="stem-section" aria-labelledby="stem-label">
-          <h2 id="stem-label">Stems</h2>
+      <div id="home-lyrics" hidden></div>
+      <div id="home-stems" hidden></div>
+      <div id="home-equalizer" hidden></div>
+      <div id="home-pitch" hidden></div>
+      <div id="home-reverb" hidden></div>
+      <div id="home-controls" hidden></div>
+      <div id="home-presets" hidden></div>
+    </section>
+
+    <section id="settings-panel" class="panel-page" role="tabpanel" aria-labelledby="settings-tab" hidden>
+      <details id="customize-home" open>
+        <summary>Customize Home</summary>
+        <p class="setting-help">Choose which sections appear below your quick presets.</p>
+        <div id="home-layout-controls"></div>
+        <p id="home-layout-status" class="setting-help" role="status"></p>
+      </details>
+      <div id="settings-pitch">
+        <details id="pitch-control">
+          <summary>Pitch Control</summary>
+          <fieldset aria-label="Pitch control" disabled>
+            <div class="effect-header">
+              <label class="effect-toggle"><input id="pitch-enabled" type="checkbox"> Enable pitch</label>
+              <button id="pitch-reset" type="button">Reset pitch</button>
+            </div>
+            <label for="pitch-value">Pitch <output id="pitch-readout" for="pitch-value">0.0 st</output>
+              <input id="pitch-value" type="range" value="0">
+            </label>
+          </fieldset>
+          <p id="pitch-status" class="setting-help" role="status"></p>
+        </details>
+      </div>
+      <div id="settings-equalizer">
+        <details id="equalizer">
+          <summary>Equalizer</summary>
+          <fieldset aria-label="Six band equalizer" disabled>
+            <div class="effect-header">
+              <label class="effect-toggle"><input id="eq-enabled" type="checkbox" checked> Enable EQ</label>
+              <button id="eq-reset" type="button">Reset EQ</button>
+            </div>
+            <label class="eq-preset-field" for="eq-preset">EQ preset <select id="eq-preset" data-eq-preset></select></label>
+            <canvas class="eq-compact-chart" role="img" aria-label="Equalizer frequency response from 20 Hz to 20 kHz"></canvas>
+            <div id="eq-bands" aria-label="Band gains in decibels"></div>
+          </fieldset>
+          <button id="open-domain" type="button" class="domain-link">⛶ Domain Expansion</button>
+        </details>
+      </div>
+      <div id="settings-controls">
+        <details id="effect-settings">
+          <summary>Audio Controls</summary>
+          <fieldset id="controls" aria-label="Effect settings" disabled></fieldset>
+          <div id="other-presets" role="group" aria-label="More presets"></div>
+        </details>
+      </div>
+      <div id="settings-stems">
+        <details id="stem-controls" open>
+          <summary id="stem-label">Stems</summary>
           <div id="stems" role="group" aria-labelledby="stem-label">
             <button type="button" data-stem="full" aria-pressed="true" disabled>Full mix</button>
             <button type="button" data-stem="instrumental" aria-pressed="false" disabled>Instrumental</button>
             <button type="button" data-stem="vocals" aria-pressed="false" disabled>Vocals</button>
           </div>
-          <p id="cloud-stem-note" hidden>Selecting a stem streams this tab’s audio to the configured cloud worker.</p>
-        </section>
+          <p id="cloud-stem-note" hidden>Vocals and Instrumental send audio from this tab for online processing.</p>
+        </details>
       </div>
-    </section>
-
-    <section id="advanced-panel" class="panel-page" role="tabpanel" aria-labelledby="advanced-tab" hidden>
-      <details id="audio-effects" open>
-        <summary>Audio Effects</summary>
-        <fieldset aria-label="Reverb controls" disabled>
-          <label class="reverb-enable"><input id="reverb-enabled" type="checkbox">Enable reverb</label>
-          <label for="reverb-preset">Reverb preset<select id="reverb-preset"></select></label>
-          <label for="effect-reverbMix">Reverb Amount<output id="reverb-amount-value" for="effect-reverbMix">0%</output>
-            <input id="effect-reverbMix" type="range" min="0" max="0.55" step="0.01" value="0">
-          </label>
-          <label for="reverb-duration">Reverb Duration<output id="reverb-duration-value" for="reverb-duration">2.4 s</output>
-            <input id="reverb-duration" type="range" min="0.4" max="4" step="0.1" value="2.4">
-          </label>
-        </fieldset>
-        <p class="setting-help">Reverb also applies in Original.</p>
-        <p id="reverb-status" class="setting-help" role="status"></p>
-      </details>
-      <details id="effect-settings" open>
-        <summary>Effect controls</summary>
-        <fieldset id="controls" aria-label="Effect settings" disabled></fieldset>
-      </details>
-      <details id="advanced-presets">
-        <summary>Presets</summary>
-      </details>
-      <details id="advanced-stems">
-        <summary>Stem controls</summary>
-        <p id="stem-buffer" class="setting-help"></p>
-      </details>
-      <section id="lyrics" aria-labelledby="lyrics-label">
-        <h2 id="lyrics-label">Lyrics</h2>
-        <p id="lyrics-status" role="status">Select a playing YouTube tab with the MoodShift icon.</p>
-        <div id="lyrics-viewport" role="region" aria-label="Song lyrics" tabindex="0" hidden></div>
-        <form id="lyrics-search" hidden>
-          <label for="lyrics-title">Song Title</label>
-          <input id="lyrics-title" type="text" maxlength="200" required>
-          <label for="lyrics-artist">Artist</label>
-          <input id="lyrics-artist" type="text" maxlength="200" required>
-          <div class="lyrics-options">
-            <label for="lyrics-offset">Lyric offset (s)
-              <input id="lyrics-offset" type="number" min="-10" max="10" step="0.1" value="0" aria-describedby="lyrics-offset-help">
+      <div id="settings-reverb">
+        <details id="audio-effects">
+          <summary>Reverb</summary>
+          <fieldset aria-label="Reverb controls" disabled>
+            <label class="reverb-enable"><input id="reverb-enabled" type="checkbox">Enable reverb</label>
+            <label for="reverb-preset">Reverb preset<select id="reverb-preset"></select></label>
+            <label for="effect-reverbMix">Reverb Amount<output id="reverb-amount-value" for="effect-reverbMix">0%</output>
+              <input id="effect-reverbMix" type="range" min="0" max="0.55" step="0.01" value="0">
             </label>
-            <label><input id="lyrics-follow" type="checkbox" checked disabled> Follow playback</label>
+            <label for="reverb-duration">Reverb Duration<output id="reverb-duration-value" for="reverb-duration">2.4 s</output>
+              <input id="reverb-duration" type="range" min="0.4" max="4" step="0.1" value="2.4">
+            </label>
+          </fieldset>
+          <p class="setting-help">Reverb also applies in Original.</p>
+          <p id="reverb-status" class="setting-help" role="status"></p>
+        </details>
+      </div>
+      <div id="settings-lyrics">
+        <details id="lyrics" open>
+          <summary>Lyrics</summary>
+          <p id="lyrics-status" role="status">Select a playing tab with the MoodShift icon.</p>
+          <div id="lyrics-viewport" role="region" aria-label="Song lyrics" tabindex="0" hidden></div>
+          <details id="lyric-options" hidden>
+            <summary>Find lyrics and adjust timing</summary>
+            <form id="lyrics-search" hidden>
+              <label for="lyrics-title">Song Title</label>
+              <input id="lyrics-title" type="text" maxlength="200" required>
+              <label for="lyrics-artist">Artist</label>
+              <input id="lyrics-artist" type="text" maxlength="200" required>
+              <div class="lyrics-options">
+                <label for="lyrics-offset">Lyric offset (s)
+                  <input id="lyrics-offset" type="number" min="-10" max="10" step="0.1" value="0" aria-describedby="lyrics-offset-help">
+                </label>
+                <label><input id="lyrics-follow" type="checkbox" checked disabled> Follow playback</label>
+              </div>
+              <p id="lyrics-offset-help">Positive values delay lyrics and chord highlights.</p>
+              <button id="lyrics-submit" type="submit" disabled>Search lyrics</button>
+            </form>
+          </details>
+        </details>
+      </div>
+      <div id="settings-presets">
+        <details id="saved-presets">
+          <summary>My Presets</summary>
+          <div class="saved-preset-fields">
+            <label for="saved-preset-list">Saved presets</label>
+            <select id="saved-preset-list"><option value="">No saved presets</option></select>
+            <label for="saved-preset-name">Name</label>
+            <input id="saved-preset-name" type="text" maxlength="64">
+            <label for="saved-preset-description">Description (optional)</label>
+            <input id="saved-preset-description" type="text" maxlength="200">
           </div>
-          <p id="lyrics-offset-help">Positive values delay lyrics and chord highlights.</p>
-          <button id="lyrics-submit" type="submit" disabled>Search lyrics</button>
-        </form>
-      </section>
+          <div class="saved-preset-actions">
+            <button id="saved-preset-save" type="button" disabled>Save Preset</button>
+            <button id="saved-preset-apply" type="button" disabled>Apply Preset</button>
+            <button id="saved-preset-update" type="button" disabled>Update Preset</button>
+            <button id="saved-preset-rename" type="button" disabled>Rename</button>
+            <button id="saved-preset-delete" type="button" disabled>Delete</button>
+          </div>
+          <p id="saved-preset-notice"></p>
+          <p id="saved-preset-status" role="status"></p>
+        </details>
+      </div>
       <details id="chords">
         <summary>Chords</summary>
-        <p id="chords-status" role="status">Select a YouTube watch tab with the MoodShift icon.</p>
-        <button type="button" id="chords-retry" hidden>Retry Songle</button>
+        <p id="chords-status" role="status">Select a playing tab with the MoodShift icon.</p>
+        <button type="button" id="chords-retry" hidden>Try again</button>
         <div id="chords-content" hidden>
           <p>Current Chord: <strong id="chord-current">—</strong> · Next: <strong id="chord-next">—</strong></p>
           <div id="chord-progression" aria-label="Chord progression" tabindex="0"></div>
@@ -137,7 +193,7 @@
         </div>
       </details>
       <details id="personalization">
-        <summary>Personalization</summary>
+        <summary>Sound Preferences</summary>
         <label><input id="memory-enabled" type="checkbox" disabled> Use remembered sound preferences</label>
         <p class="memory-help">Saved on this device. When enabled, relevant preferences accompany your Gemini prompt.</p>
         <form id="memory-form" class="saved-preset-fields">
@@ -150,33 +206,6 @@
         </form>
         <ul id="memory-local-list" aria-label="Local sound preferences" hidden></ul>
         <p id="memory-status" role="status"></p>
-        <details id="supermemory-settings">
-          <summary>Supermemory</summary>
-          <label><input id="memory-remote-enabled" type="checkbox" disabled> Use Supermemory preferences</label>
-          <p class="memory-help">Requires a configured local proxy or private owner backend.</p>
-          <form id="memory-remote-form" class="saved-preset-fields">
-            <label for="memory-remote-preference">Cloud sound preference</label>
-            <input id="memory-remote-preference" type="text" maxlength="240" disabled>
-            <div class="saved-preset-actions">
-              <button id="memory-remote-save" type="submit" disabled>Save to Supermemory</button>
-            </div>
-          </form>
-          <div class="saved-preset-actions">
-            <button id="memory-view" type="button" disabled>View remote preferences</button>
-            <button id="memory-clear" type="button" disabled>Clear remote preferences</button>
-          </div>
-          <ul id="memory-list" aria-label="Supermemory preferences" hidden></ul>
-          <p id="memory-remote-status" role="status"></p>
-        </details>
-      </details>
-      <details id="cloud-settings" hidden>
-        <summary>Private demo access</summary>
-        <form id="cloud-code-form" class="saved-preset-fields">
-          <label for="cloud-code">Demo access code</label>
-          <input id="cloud-code" type="password" maxlength="128" autocomplete="off" placeholder="Leave blank to clear">
-          <div class="saved-preset-actions"><button type="submit">Save demo code</button></div>
-        </form>
-        <p id="cloud-code-status" role="status"></p>
       </details>
     </section>
     <footer><button id="stop" type="button" disabled>Stop processing</button></footer>

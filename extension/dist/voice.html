@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice command · MoodShift</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <link rel="stylesheet" href="voice.css">
+</head>
+<body>
+  <main class="voice-command">
+    <h1>Voice command</h1>
+    <p class="setting-help">Chrome may send microphone audio to its speech service. MoodShift sends the text to Gemini through your configured backend.</p>
+    <div class="voice-actions">
+      <button type="button" id="voice-listen" disabled>🎙️ Listen</button>
+      <button type="button" id="voice-cancel" hidden>Cancel</button>
+      <button type="button" id="voice-close">Close</button>
+    </div>
+    <p id="voice-status" role="status">Connecting to MoodShift…</p>
+    <p id="voice-transcript" hidden></p>
+  </main>
+  <script src="voice.js"></script>
+</body>
+</html>

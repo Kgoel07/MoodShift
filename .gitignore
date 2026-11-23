@@ -2,6 +2,7 @@ node_modules/
 .npm-cache/
 .moodshift-test/
 .stem-gate/
+.mask-library/
 __pycache__/
 server/.env
 .env

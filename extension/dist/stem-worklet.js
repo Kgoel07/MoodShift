@@ -146,7 +146,7 @@
         output[3][index] = this.dry[offset + 1] - vocalR;
         if (!this.signaled) {
           this.signaled = true;
-          this.channel?.postMessage({ type: "active" });
+          this.channel?.postMessage({ type: "active", queuedFrames: position - playback });
         }
       }
       return true;
