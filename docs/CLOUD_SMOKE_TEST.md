@@ -10,7 +10,7 @@ After deploying the API, run this with your production HTTPS origin and the prod
 node scripts/smoke-cloud-api.mjs https://YOUR-PROJECT.vercel.app chrome-extension://YOUR_EXTENSION_ID
 ```
 
-To send one live synthetic prompt, use PowerShell 7.2+ to enter the code privately. Add `--owner` when testing an operator deployment.
+To send one live synthetic prompt, use PowerShell 7.2+ to enter the code privately.
 
 ```powershell
 $env:MOODSHIFT_SMOKE_TOKEN = Read-Host 'Private demo access code' -MaskInput
@@ -21,7 +21,7 @@ try {
 }
 ```
 
-Verify HTTP 200 and a bass-only patch that preserves reverb. The shared-demo test also confirms that an authenticated user cannot view remote memory. On an operator deployment with a Supermemory key, use the extension to save a temporary sound preference, view it after indexing, and clear it only on a disposable installation namespace. That action erases the namespace’s existing preferences. See [Vercel setup](DEPLOY_VERCEL.md).
+Verify HTTP 200 and a bass-only patch that preserves reverb. See [Vercel setup](DEPLOY_VERCEL.md).
 
 ## 2. Private SSH GPU link
 
@@ -50,6 +50,6 @@ Verify HTTP 200 and a bass-only patch that preserves reverb. The shared-demo tes
    npm run build:extension -- --mode production
    ```
 
-3. In Chrome reload `extension/dist-cloud` and refresh the authorized YouTube tab. Start playback, click MoodShift, and save the code via **Private demo access**. Verify the neutral mix and then Dreamy, Original/Modified, and an acknowledged Gemini prompt. Check Lyrics, Chords, and My Presets independently.
+3. In Chrome reload `extension/dist-cloud` and refresh the authorized YouTube tab. Start playback, click MoodShift, and [provision the access code](DEPLOY_VERCEL.md#provision-the-installed-extension) on a fresh installation. Verify the neutral mix and then Dreamy, Original/Modified, and an acknowledged Gemini prompt. Check Lyrics, Chords, and My Presets independently.
 4. Enable Instrumental, listen through the displayed buffer delay, switch to Vocals, and confirm Original still plays the live mix. Adjust the shared lyrics/chords offset by ear if needed. While a stream is active, a second authorized client should receive busy feedback. Stop or disable the worker and confirm the panel reports the failure and Full Mix stays audible. Restart it, reconnect, and try **Stop processing**.
 5. Clear the saved code using the blank field and check that the next interpretation or stem request requires it. Confirm local DSP controls and saved presets remain usable. Stop or terminate the EC2 instance after the demo.

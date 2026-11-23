@@ -7,7 +7,7 @@ This feature was created on `feature/reverb-audio-effects` directly from `featur
 1. Run `npm run build:extension`. If you use the production extension, run `npm run build:extension -- --mode production` instead.
 2. Reload your existing MoodShift entry in `chrome://extensions`. Its unpacked directory must be `extension/dist` for development or `extension/dist-cloud` for production. Reload an already-open YouTube page to install its updated content script.
 3. Play a local audio file in a browser tab, or play authorized audio on YouTube. Click the MoodShift toolbar icon on that tab.
-4. Open **Advanced → Audio Effects**. Select a reverb preset, adjust Amount and Duration, and toggle Enable reverb. The feature works with no proxy or stem worker running.
+4. Open **Settings → Reverb**. Select a reverb preset, adjust Amount and Duration, and toggle Enable reverb. The feature works with no proxy or stem worker running.
 5. Try Original and Modified. Reverb applies to both; Original still bypasses the other DSP controls. Disable reverb for a dry A/B comparison. Full Mix, Instrumental and Vocals keep the reverb settings when switched.
 6. On YouTube, note the current playback speed, then choose Slowed + Reverb. The status reports the actual applied speed. Change presets, disable reverb, Stop, or switch capture to another tab and verify the previous speed returns.
 7. Close and reopen the side panel, pause/resume the source, and save a customized result under My Presets. Change the reverb and reapply that saved preset.
@@ -35,7 +35,7 @@ There is one dry route through the reverb stage. Stereo impulse responses are ge
 
 Impulse changes coalesce for 80 ms. Old and new wet returns crossfade over 300 ms, and faded returns disconnect after 350 ms. At zero amount there are no connected convolution returns after the fade. A four-entry LRU cache bounds retained response buffers; one maximum-length stereo response uses about 1.54 MB at 48 kHz. Stop clears timers, cache and graph connections. Amount changes reuse the active response.
 
-The offscreen state includes preset, duration, last positive amount and actual speed status. Changes increment the existing effects revision, so stale Gemini responses cannot overwrite a newer local reverb edit. Gemini's existing reverb amount field remains compatible. Home presets and Gemini amount changes use the current reverb style/duration. The side panel reads this authoritative state when reopened; switching Home/Advanced does not reapply an effect.
+The offscreen state includes preset, duration, last positive amount and actual speed status. Changes increment the existing effects revision, so stale Gemini responses cannot overwrite a newer local reverb edit. Gemini's existing reverb amount field remains compatible. Home presets and Gemini amount changes use the current reverb style/duration. The side panel reads this authoritative state when reopened; switching Home and Settings does not reapply an effect.
 
 My Presets optionally stores the new reverb metadata alongside the unchanged audio settings. Existing version-1 presets without metadata remain valid and are not rewritten during listing. A new saved preset restores its metadata and audio settings in the same acknowledged effects command. A new capture starts neutral; use My Presets to explicitly carry a customized configuration across captures.
 

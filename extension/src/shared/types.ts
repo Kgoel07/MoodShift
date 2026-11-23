@@ -1,10 +1,12 @@
 import { clampPatch, effectKeys, type AudioEffectState, type EffectPatch } from './effects.js';
 import type { ReverbState } from './reverb';
+import type { SourcePlatform } from './track';
 
 export interface SourceTab {
   tabId: number;
   title: string;
   muted: boolean;
+  platform?: SourcePlatform;
 }
 
 export interface CaptureSession extends SourceTab {

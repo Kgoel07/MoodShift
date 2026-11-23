@@ -121,3 +121,23 @@ Branch `feature/reverb-audio-effects` starts directly at `feature/advanced-ui-lo
 The first browser attempts exposed test-harness issues with repeated CDP variable declarations, loading a reopened panel, activating the source before triggering its toolbar action, and sending Stop through the real panel. These were corrected; the final full integration run exited successfully. No product failures were suppressed.
 
 Commands, file inventory, architecture, limits and manual steps are in [Reverb audio effects](docs/REVERB_AUDIO_EFFECTS.md). The existing separator model, configuration and buffer lengths are unchanged. No GPU benchmark, cloud deployment or additional dependency was introduced.
+
+## Home and Settings refresh — November 22, 2026
+
+`feature/reverb-audio-effects` was already committed at `d4aaa47` and pushed to its matching branch on `origin`. The local `feature/ui-settings-home-refresh` branch starts directly at that commit.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Builds and typecheck | PASS (automated) | Development and production bundles and `npm run typecheck`. |
+| JavaScript and Python tests | PASS (automated) | 110 JavaScript tests and nine Python stem tests. The new tests cover Home defaults and stored selections, negative and fractional slider fills, domain detection, and artwork URL validation. |
+| Home and Settings in Chrome 157.0.8103.80 | PASS (automated) | Four quick presets, exact preset selection, keyboard tab navigation, slider DSP acknowledgments and fill, Home customization, storage across panel reopen, and access to hidden Home sections from Settings. Switching views kept the same audio session and controls. |
+| Narrow layout | PASS (visual inspection and automated) | Inspected actual extension renders of Home, Settings, and expanded Audio Controls at 320 CSS pixels. Checked horizontal overflow at 320 and 250 CSS pixels. Slimmed the scrollbar after inspection. |
+| Player information and lyrics | PASS (automated) | Real YouTube playback showed the current title, artist and thumbnail. Local captures showed a generic music icon and cleared stale artwork when switching tabs. Live LRCLIB lyrics passed Home placement, pause, seek, playback rate, offset, reopening, and YouTube in-tab navigation. |
+| Original branding | PASS (automated) | Chrome decoded the original logo at all four manifest sizes and rendered the icon on `chrome://extensions`. Both builds contain the icon files and point the toolbar action at the 16 and 32 pixel variants. |
+| Reverb, stem routing, and local settings | PASS (automated) | Real captured audio and reverb tail, saved presets and local sound preferences across Chrome restart, local preference opt-out, YouTube slowdown/restoration, and Instrumental/Vocals/Full Mix via the real AudioWorklet path with a PCM fixture. |
+| Production access | PASS (automated with fixtures) | Chrome reused a provisioned test credential. Server tests rejected invalid bearer tokens, disallowed origins, and requests over quota. The retired memory endpoint returned 404 to an authenticated request. |
+| Physical toolbar, live Spotify/SoundCloud, and GPU separation | NOT RUN | Headless Chrome verifies icon wiring and decoding rather than the visible toolbar. Platform detection for Spotify and SoundCloud is covered by unit tests. Stem protocol coverage used a fixture. |
+
+The implementation is in the side-panel HTML, CSS and TypeScript, `panel-tabs.ts`, `shared/home-layout.ts`, `now-playing.ts`, `shared/track.ts`, and the existing audio, lyrics, saved-presets, and preferences adapters. Branding comes from the original PNG restored under `extension/assets`, plus the four icon sizes copied by `scripts/build-extension.mjs`. The server and package manifest changes remove the Supermemory SDK, routes and configuration. The updated cloud access instructions are in [Vercel setup](docs/DEPLOY_VERCEL.md#provision-the-installed-extension). Chrome and regression checks live in `tests/chrome-smoke.mjs`, `tests/reverb-browser.mjs`, `tests/ui-settings.test.ts`, and the existing cloud tests.
+
+To try the update, run `npm run build:extension`, reload your unpacked installation in `chrome://extensions`, refresh an open YouTube page, and click MoodShift on the playing tab. Open **Settings → Customize Home** to change which sections appear. Production users can rebuild with `npm run build:extension -- --mode production` and reload their existing production installation.

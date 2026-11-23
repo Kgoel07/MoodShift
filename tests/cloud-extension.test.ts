@@ -41,12 +41,12 @@ describe('extension deployment settings', () => {
     await apiRequest('/api/interpret', {}, signal, local);
     expect(read).not.toHaveBeenCalled();
     expect(fetcher.mock.calls[0][1].headers.Authorization).toBeUndefined();
-    await apiRequest('/api/memory', {}, signal, hybrid);
-    expect(fetcher.mock.calls[1]).toEqual(['https://moodshift.example.com/api/memory',
+    await apiRequest('/api/interpret', {}, signal, hybrid);
+    expect(fetcher.mock.calls[1]).toEqual(['https://moodshift.example.com/api/interpret',
       expect.objectContaining({ headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + code }, redirect: 'error' })]);
-    await expect(apiRequest('/api/memory', {}, signal, { ...cloud, apiBaseUrl: local.apiBaseUrl })).rejects.toThrow('HTTPS');
+    await expect(apiRequest('/api/interpret', {}, signal, { ...cloud, apiBaseUrl: local.apiBaseUrl })).rejects.toThrow('HTTPS');
     read.mockResolvedValue({});
-    await expect(apiRequest('/api/interpret', {}, signal, cloud)).rejects.toThrow('access code');
+    await expect(apiRequest('/api/interpret', {}, signal, cloud)).rejects.toThrow('Online processing');
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
@@ -67,12 +67,10 @@ describe('extension deployment settings', () => {
     }
   });
 
-  it('distinguishes Vercel deployment protection from a MoodShift access-code error', async () => {
-    const protectedReply = Response.json({ protection: {}, error: { code: '401' } }, { status: 401 });
-    expect(await apiErrorDetail(protectedReply, cloud)).toMatch(/Vercel Deployment Protection.*production domain/);
-    const demoReply = Response.json({ error: 'Enter the private demo access code.' }, { status: 401 });
-    expect(await apiErrorDetail(demoReply, cloud)).toBe('Enter the private demo access code.');
-    expect(await apiErrorDetail(new Response('<html>', { status: 502 }), cloud)).toMatch(/Cloud API returned HTTP 502/);
-    expect(await apiErrorDetail(new Response('<html>', { status: 502 }), local)).toMatch(/Check the local proxy/);
+  it('uses plain language for access, rate and service errors', () => {
+    const unauthorized = Response.json({ error: 'Internal diagnostic' }, { status: 401 });
+    expect(apiErrorDetail(unauthorized)).toContain('Contact whoever provided MoodShift');
+    expect(apiErrorDetail(new Response(null, { status: 429 }))).toContain('Try again in a moment');
+    expect(apiErrorDetail(new Response(null, { status: 502 }))).toContain('unavailable right now');
   });
 });

@@ -15,7 +15,7 @@ Open the panel from Chrome’s side panel menu to inspect the existing session. 
 
 ## Reverb without a stem worker
 
-Open **Advanced → Audio Effects** and choose **Dreamy Reverb**, **Concert Hall**, or **Slowed + Reverb**. Adjust **Reverb Amount** and **Reverb Duration**, or turn reverb off. It runs locally on the captured audio without a proxy, GPU or separation buffer, and also works on the selected Instrumental/Vocals output when a stem worker is available. My Presets saves customized reverb settings while preserving existing presets.
+Open **Settings → Reverb** and choose **Dreamy Reverb**, **Concert Hall**, or **Slowed + Reverb**. Adjust **Reverb Amount** and **Reverb Duration**, or turn reverb off. It runs locally on the captured audio without a proxy, GPU or separation buffer, and also works on the selected Instrumental/Vocals output when a stem worker is available. My Presets saves customized reverb settings while preserving existing presets.
 
 Slowed + Reverb uses 85% of the previous playback speed on supported YouTube watch pages and restores it when disabled, stopped, or switched to another source. Reload an already-open YouTube page after updating the extension. Other sources keep the reverb and explicitly report that slowing is unavailable. Reverb also applies in Original; turn reverb off for a dry comparison. [Controls, limitations, implementation and Chrome tests](docs/REVERB_AUDIO_EFFECTS.md)
 
@@ -47,19 +47,17 @@ MoodShift sends the exact YouTube watch URL to Songle when you open **Chords**. 
 2. Select another playing tab with the toolbar icon. Pick the saved preset and click **Apply Preset**. MoodShift waits for the audio engine to acknowledge the stored settings. If the requested stem helper is unavailable, the panel reports the partial result.
 3. Change the mix, then use **Update Preset** to replace the saved audio settings. Edit the text fields and use **Rename** to save the name and description. Use **Delete** to remove that preset. Close and reopen Chrome to check that the preset is still in the list.
 
-Saved presets are shared across songs in the same Chrome profile. They use local Chrome extension storage and work without Gemini or Supermemory. An active capture is needed to save, update the audio settings, or apply a preset.
+Saved presets are shared across songs in the same Chrome profile. They use local Chrome extension storage and work without Gemini. An active capture is needed to save, update the audio settings, or apply a preset.
 
 ## Side panel and sound preferences
 
-**Home** contains the prompt, quick presets, My Presets, Original/Modified, and stem choices. **Advanced** contains the effect sliders, lyrics, chord diagrams, stem buffer details, personalization, and private demo access. Presets and the stem controls are available in both tabs. Select a tab with the mouse or with the Left and Right arrow keys when the tab has focus. MoodShift remembers the last selected tab in the same Chrome profile.
+**Home** starts with four quick presets: Dreamy, Warm, Underwater, and Bass Boost. The prompt and Original/Modified controls sit below them. **Settings → Customize Home** lets you pin Lyrics, Stems, Reverb, Audio Controls, and My Presets. Lyrics and Stems appear by default. Settings always provides access to all five sections, plus Chords and Sound Preferences. Hiding a section from Home leaves its settings and any active effect intact. Use the Left and Right arrow keys to switch tabs while a tab button has focus. MoodShift remembers the selected tab and Home layout in this Chrome profile.
 
-In **Advanced → Personalization**, enter a short sound preference such as “I prefer warm bass and minimal distortion” and choose **Save locally**. Each entry has Edit and Delete controls. During capture, “Remember that I prefer warm bass” in the main prompt also saves locally. Local preferences and saved presets use separate Chrome storage and persist across restarts. Local preferences support up to 30 entries of 240 characters each.
+The Now Playing bar uses the captured tab's title and platform. On supported YouTube watch pages it shows the song and artist from the existing playback integration and loads the current video thumbnail from YouTube. Spotify and SoundCloud use the tab title and a platform icon. Other sources show the tab title and a music icon.
 
-Turn on **Use remembered sound preferences** to let the extension send up to four relevant entries with each Gemini prompt. Broad mood requests can use recent preferences. Explicit instructions take priority, so “Remove all bass” takes precedence over a bass preference. Turn the setting off to stop using preferences while keeping them on the device. Use a backend built from this revision to accept the local context field.
+In **Settings → Sound Preferences**, enter a short sound preference such as “I prefer warm bass and minimal distortion” and choose **Save locally**. Each entry has Edit and Delete controls. During capture, “Remember that I prefer warm bass” in the main prompt also saves locally. Local preferences and saved presets use separate Chrome storage and persist across restarts. Local preferences support up to 30 entries of 240 characters each.
 
-### Optional Supermemory
-
-The **Supermemory** section has its own opt-in and Save, View, and Clear controls. Configure `SUPERMEMORY_API_KEY` on the local proxy or a private owner deployment. Existing Supermemory settings and installation IDs continue to work. Shared Vercel demos support local personalization. Supermemory writes require explicit use of **Save to Supermemory**. Clear remote preferences waits for provider confirmation and remains available with personalization disabled. [Vercel settings](docs/DEPLOY_VERCEL.md#prepare-the-extension-id-and-credentials) · [Namespace permissions](https://supermemory.ai/docs/concepts/container-tags)
+Turn on **Use remembered sound preferences** to let the extension send up to four relevant entries with each Gemini prompt. Broad mood requests can use recent preferences. Explicit instructions take priority, so “Remove all bass” takes precedence over a bass preference. Turn the setting off to stop using preferences while keeping them on the device. The local sound preferences continue to work with the existing Gemini API.
 
 ## Optional live stems on Windows
 
@@ -138,8 +136,8 @@ Use authorized audio. A Creative Commons option is Kevin MacLeod’s “Carefree
 
 After building, run `node tests/chrome-smoke.mjs` with current desktop Chrome installed. The script uses a disposable headless profile and a locally generated tone. On PowerShell, set `$env:MOODSHIFT_YOUTUBE_TEST='1'` before the command to add the YouTube check. Also set `$env:MOODSHIFT_WORKER_TEST='1'` to wait for the worker to go idle during YouTube playback. Set `MOODSHIFT_CHROME_PATH` to the Chrome executable if it is installed outside the default Windows location. This test checks capture and state programmatically. Use the listening checklist to assess audio quality and direct speaker output.
 
-Set `MOODSHIFT_CHORDS_TEST=1` to exercise the live Songle timeline, `MOODSHIFT_PRESETS_TEST=1` to verify exact restoration across a Chrome restart, and `MOODSHIFT_MEMORY_TEST=1` to exercise the personalization controls with mocked provider responses. If another MoodShift session is using the stem helper, set `MOODSHIFT_STEM_TEST_PORT` to a free port such as `18788`. The test uses a disposable copy of the bundled extension and starts a separate helper on that port.
+Set `MOODSHIFT_CHORDS_TEST=1` to exercise the live Songle timeline, `MOODSHIFT_PRESETS_TEST=1` to verify exact restoration across a Chrome restart, and `MOODSHIFT_MEMORY_TEST=1` to exercise local Sound Preferences with mocked Gemini responses. If another MoodShift session is using the stem helper, set `MOODSHIFT_STEM_TEST_PORT` to a free port such as `18788`. The test uses a disposable copy of the bundled extension and starts a separate helper on that port.
 
 ## Private cloud demo
 
-The default build still uses the local Gemini/Supermemory proxy and the local stem helper. The production build writes to `extension/dist-cloud` and uses a configured HTTPS API and WSS stem worker. A demo code is entered after installation. [Vercel setup](docs/DEPLOY_VERCEL.md) · [AWS CUDA worker setup](docs/DEPLOY_AWS_GPU.md) · [Cloud smoke test](docs/CLOUD_SMOKE_TEST.md) · [Deployment status](CLOUD_DEPLOY_STATUS.md)
+The default build still uses the local Gemini proxy and the local stem helper. The production build writes to `extension/dist-cloud` and uses a configured HTTPS API and WSS stem worker. Existing provisioned credentials are reused. See the operator setup steps for new installations. [Vercel setup](docs/DEPLOY_VERCEL.md) · [AWS CUDA worker setup](docs/DEPLOY_AWS_GPU.md) · [Cloud smoke test](docs/CLOUD_SMOKE_TEST.md) · [Deployment status](CLOUD_DEPLOY_STATUS.md)

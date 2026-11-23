@@ -1,6 +1,7 @@
 import { defaultReverb, reverbDuration, reverbPresets, type ReverbPatch } from './shared/reverb';
 import { effectSpecs } from './shared/effects';
 import type { CaptureStatus } from './shared/types';
+import { paintRange } from './range-control';
 
 export function mountReverb(root: HTMLElement, change: (patch: ReverbPatch) => void, editing: () => void) {
   const controls = root.querySelector<HTMLFieldSetElement>('fieldset')!;
@@ -19,9 +20,9 @@ export function mountReverb(root: HTMLElement, change: (patch: ReverbPatch) => v
   enabled.addEventListener('change', () => { editing(); change({ enabled: enabled.checked }); });
   preset.addEventListener('change', () => { editing(); change({ preset: preset.value as keyof typeof reverbPresets }); });
   amount.addEventListener('input', () => {
-    editing(); amountLabel.value = `${Math.round(amount.valueAsNumber * 100)}%`; change({ amount: amount.valueAsNumber });
+    editing(); paintRange(amount); amountLabel.value = `${Math.round(amount.valueAsNumber * 100)}%`; change({ amount: amount.valueAsNumber });
   });
-  duration.addEventListener('input', () => { editing(); durationEditing = true; durationLabel.value = `${duration.valueAsNumber.toFixed(1)} s`; });
+  duration.addEventListener('input', () => { editing(); durationEditing = true; paintRange(duration); durationLabel.value = `${duration.valueAsNumber.toFixed(1)} s`; });
   duration.addEventListener('change', () => { editing(); durationEditing = false; change({ duration: duration.valueAsNumber }); });
   return {
     render(status: CaptureStatus, ready: boolean) {
@@ -33,6 +34,8 @@ export function mountReverb(root: HTMLElement, change: (patch: ReverbPatch) => v
       enabled.checked = mix > 0; preset.value = settings.preset;
       amount.value = String(mix); amountLabel.value = `${Math.round(mix * 100)}%`;
       if (!durationEditing) { duration.value = String(settings.duration); durationLabel.value = `${settings.duration.toFixed(1)} s`; }
+      paintRange(amount);
+      paintRange(duration);
       const speed = capture?.reverb?.speed;
       notice.textContent = mix > 0 && settings.preset === 'slowed'
         ? speed?.state === 'active' ? `Playback slowed to ${Number(speed.rate!.toFixed(2))}×` : speed?.message ?? 'Reverb active. Playback slowing is unavailable.' : '';

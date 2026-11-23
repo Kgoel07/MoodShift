@@ -9,14 +9,19 @@ import { mountReverb } from './reverb-panel';
 import { explicitPreference } from './shared/preferences';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
 import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
-import { deployment, demoCodePattern, usesCloudStems } from './shared/deployment';
-import { apiErrorDetail, apiRequest, demoCodeKey } from './api-client';
+import { usesCloudStems } from './shared/deployment';
+import { mountNowPlaying } from './now-playing';
+import { paintRange } from './range-control';
+import { apiErrorDetail, apiRequest, CloudAccessError } from './api-client';
 
 mountPanelTabs();
 
-const statusLabel = document.querySelector<HTMLParagraphElement>('#status')!;
+const nowPlaying = mountNowPlaying();
 const chords = mountChords(document.querySelector<HTMLElement>('#chords')!);
-const lyrics = mountLyrics(document.querySelector<HTMLElement>('#lyrics')!, chords.setPlayback);
+const lyrics = mountLyrics(document.querySelector<HTMLElement>('#lyrics')!, (playback, offset) => {
+  nowPlaying.setPlayback(playback);
+  chords.setPlayback(playback, offset);
+});
 const stopButton = document.querySelector<HTMLButtonElement>('#stop')!;
 const meter = document.querySelector<HTMLMeterElement>('#meter')!;
 const inputStatus = document.querySelector<HTMLParagraphElement>('#input-status')!;
@@ -26,8 +31,6 @@ const presetGroup = document.querySelector<HTMLDivElement>('#presets')!;
 const monitorButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-mode]')];
 const stemButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-stem]')];
 const stemLabel = document.querySelector<HTMLParagraphElement>('#stem-status')!;
-document.querySelector<HTMLElement>('#stem-buffer')!.textContent =
-  `Worker · ${usesCloudStems() ? 'Cloud' : 'This device'} · ${deployment.stemDelaySeconds}s playback buffer`;
 const form = document.querySelector<HTMLFormElement>('#interpret')!;
 const promptInput = document.querySelector<HTMLTextAreaElement>('#prompt')!;
 const applyButton = document.querySelector<HTMLButtonElement>('#apply')!;
@@ -51,30 +54,7 @@ const reverb = mountReverb(document.querySelector<HTMLElement>('#audio-effects')
   if (status.phase === 'capturing') void command({ type: 'SET_REVERB', sessionId: status.session.id, patch });
 }, cancelInterpretation);
 
-if (deployment.mode === 'production') {
-  document.querySelector<HTMLElement>('#cloud-settings')!.hidden = false;
-  document.querySelector<HTMLElement>('#cloud-stem-note')!.hidden = !usesCloudStems();
-  const settings = document.querySelector<HTMLFormElement>('#cloud-code-form')!;
-  const field = document.querySelector<HTMLInputElement>('#cloud-code')!;
-  const result = document.querySelector<HTMLElement>('#cloud-code-status')!;
-  settings.addEventListener('submit', async event => {
-    event.preventDefault();
-    const code = field.value.trim();
-    if (code && !demoCodePattern.test(code)) {
-      result.textContent = 'Enter a 32–128 character code using letters, numbers, hyphens, or underscores.';
-      return;
-    }
-    try {
-      if (code) await chrome.storage.local.set({ [demoCodeKey]: code });
-      else await chrome.storage.local.remove(demoCodeKey);
-      cancelInterpretation();
-      field.value = '';
-      result.textContent = code ? 'Private demo code saved.' : 'Private demo code cleared.';
-    } catch {
-      result.textContent = 'Could not update the private demo code.';
-    }
-  });
-}
+document.querySelector<HTMLElement>('#cloud-stem-note')!.hidden = !usesCloudStems();
 
 function updateApply(): void {
   applyButton.disabled = status.phase !== 'capturing' || stopping || commandPending
@@ -93,7 +73,7 @@ function cancelInterpretation(): void {
 function renderMeter(features: AudioFeatures): void {
   const capture = status.phase === 'capturing' ? status : undefined;
   meter.value = capture && !capture.session.muted && !capture.outputPaused ? Math.sqrt(features.rms) : 0;
-  inputStatus.textContent = capture?.outputPaused ? 'Audio output paused. Click MoodShift on the source tab to retry.'
+  inputStatus.textContent = capture?.outputPaused ? 'Audio paused. Click MoodShift on the playing tab to resume.'
     : capture?.session.muted ? 'Source tab muted.'
     : capture && features.isSilent ? 'Paused or silent input.' : '';
 }
@@ -119,6 +99,7 @@ const sliders = effectKeys.filter(key => key !== 'reverbMix').map(key => {
   label.append(text, value, input);
   controls.append(label);
   input.addEventListener('input', () => {
+    paintRange(input);
     cancelInterpretation();
     queuedEdits[key] = input.valueAsNumber;
     updateApply();
@@ -130,7 +111,9 @@ const sliders = effectKeys.filter(key => key !== 'reverbMix').map(key => {
   return { key, input, value };
 });
 
-for (const [name, patch] of [...Object.entries(presets), ['Reset', neutralEffects] as const]) {
+const quickPresets = ['Dreamy', 'Warm', 'Bass Boost', 'Underwater'];
+const morePresets = document.querySelector('#other-presets')!;
+const presetButtons = [...Object.entries(presets), ['Reset', neutralEffects] as const].map(([name, patch]) => {
   const button = document.createElement('button');
   button.type = 'button';
   button.textContent = name;
@@ -138,8 +121,9 @@ for (const [name, patch] of [...Object.entries(presets), ['Reset', neutralEffect
     clearEdits();
     applyLocal(patch);
   });
-  presetGroup.append(button);
-}
+  (quickPresets.includes(name) ? presetGroup : morePresets).append(button);
+  return { button, patch, name };
+});
 
 function clearEdits(): void {
   clearTimeout(editTimer);
@@ -186,13 +170,18 @@ function render(next: CaptureStatus): void {
     feedback.textContent = '';
   }
   status = next;
+  nowPlaying.setStatus(next);
   lyrics.setSource(next.phase === 'capturing' ? next.session : undefined);
   updateApply();
   stopButton.disabled = next.phase !== 'capturing' || stopping;
   const enabled = !stopButton.disabled && !presetApplying;
   reverb.render(next, enabled);
   controls.disabled = !enabled;
-  for (const button of presetGroup.querySelectorAll('button')) button.disabled = !enabled;
+  for (const { button, patch, name } of presetButtons) {
+    button.disabled = !enabled;
+    if (name !== 'Reset') button.setAttribute('aria-pressed', String(next.phase === 'capturing'
+      && effectKeys.every(key => (queuedEdits[key] ?? next.effects[key]) === patch[key])));
+  }
   for (const button of monitorButtons) {
     button.disabled = !enabled;
     button.setAttribute('aria-pressed', String(button.dataset.mode === (next.phase === 'capturing' ? next.monitor : 'modified')));
@@ -204,28 +193,23 @@ function render(next: CaptureStatus): void {
   }
   switch (stem?.phase) {
     case 'loading': stemLabel.textContent = 'Connecting to the local model…'; break;
-    case 'buffering': stemLabel.textContent = `Buffering stem audio · ${deployment.stemDelaySeconds} s delay…`; break;
+    case 'buffering': stemLabel.textContent = 'Preparing your mix… The song will keep playing.'; break;
     case 'active':
       stemLabel.textContent = next.phase === 'capturing' && next.monitor === 'original'
-        ? 'Original · Live mix. Modified resumes the delayed stem.'
-        : `Active · Audio trails video by about ${deployment.stemDelaySeconds} s.`;
+        ? 'Playing the original mix.' : 'Your separated mix can play a few seconds behind the video.';
       break;
-    case 'unavailable': stemLabel.textContent = `Unavailable · ${stem.message}`; break;
+    case 'unavailable': stemLabel.textContent = 'Couldn’t separate the audio. Full Mix is still playing.'; break;
     default: stemLabel.textContent = '';
   }
   const effects = next.phase === 'capturing' ? next.effects : neutralEffects;
   for (const { key, input, value } of sliders) {
     const setting = queuedEdits[key] ?? effects[key];
     input.value = String(setting);
+    paintRange(input);
     value.textContent = displayValue(setting, effectSpecs[key].unit);
   }
   renderMeter(next.phase === 'capturing' ? next.features : silentFeatures);
-  switch (next.phase) {
-    case 'ready': statusLabel.textContent = 'Ready · Click MoodShift on the tab you want to hear.'; break;
-    case 'starting': statusLabel.textContent = `Capturing… · ${next.source.title}`; break;
-    case 'capturing': statusLabel.textContent = `Listening to this tab · ${next.session.title}`; break;
-    case 'error': statusLabel.textContent = `Error · ${next.message}`; break;
-  }
+
 }
 
 async function readCapture() {
@@ -255,7 +239,8 @@ async function restorePreset(preset: SavedPreset): Promise<string> {
     if (!current()) throw new Error('Preset application was superseded.');
     refreshId++;
     render(result.status);
-    return result.limitation ? `Effects and monitor applied. Stem unavailable · ${result.limitation}` : `Applied ✓ · ${preset.name}`;
+    if (result.limitation) console.warn('MoodShift preset stem unavailable', result.limitation);
+    return result.limitation ? 'Effects applied. The separated mix is unavailable right now.' : `Applied ✓ · ${preset.name}`;
   } finally {
     if (current()) {
       presetApplying = false;
@@ -282,7 +267,8 @@ async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, 
       });
       if (id !== commandId) return;
       if (!reply.ok) {
-        feedback.textContent = `Effects updated. Stem unavailable · ${reply.message}`;
+        console.warn('MoodShift stem unavailable', reply.message);
+        feedback.textContent = 'Effects updated. The separated mix is unavailable right now.';
         void refresh();
         return;
       }
@@ -296,7 +282,10 @@ async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, 
   } catch (error) {
     if (id !== commandId) return;
     stopping = false;
-    feedback.textContent = `Error · ${error instanceof Error ? error.message : String(error)}`;
+    console.warn('MoodShift playback control failed', error);
+    feedback.textContent = message.type === 'SET_STEM'
+      ? 'Couldn’t switch mixes. Check that the song is playing and try again.'
+      : 'Couldn’t update playback. Try again on the playing tab.';
     void refresh();
   } finally {
     if (id === commandId) {
@@ -310,8 +299,12 @@ async function refresh(): Promise<void> {
   const id = ++refreshId;
   try {
     const reply = await toWorker({ type: 'GET_STATUS' });
-    if (id === refreshId) render(reply.ok ? reply.status : { phase: 'error', message: reply.message });
-  } catch {
+    if (id === refreshId) {
+      if (!reply.ok) console.warn('MoodShift status error', reply.message);
+      render(reply.ok ? reply.status : { phase: 'error', message: 'Reopen MoodShift to reconnect.' });
+    }
+  } catch (error) {
+    console.warn('MoodShift status unavailable', error);
     if (id === refreshId) render({ phase: 'error', message: 'Reopen MoodShift to reconnect.' });
   }
 }
@@ -335,6 +328,7 @@ promptInput.addEventListener('keydown', event => {
 });
 
 class GeminiUnavailable extends Error {}
+class UserApiError extends Error {}
 
 form.addEventListener('submit', async event => {
   event.preventDefault();
@@ -368,10 +362,10 @@ form.addEventListener('submit', async event => {
         ...personalization.context(prompt),
     }, request.controller.signal);
     if (!response.ok) {
-      const detail = await apiErrorDetail(response);
-      if (response.status === 504) throw new Error('Gemini timed out. Try again.');
-      if (response.status >= 500 || response.status === 429) throw new GeminiUnavailable(detail);
-      throw new Error(detail);
+      const detail = apiErrorDetail(response);
+      if (response.status === 504) throw new UserApiError('That took longer than expected. Please try again.');
+      if (response.status >= 500) throw new GeminiUnavailable(detail);
+      throw new UserApiError(detail);
     }
     const body = await response.json();
     if (interpretation?.id !== request.id) return;
@@ -399,11 +393,12 @@ form.addEventListener('submit', async event => {
     if (request.controller.signal.aborted) {
       feedback.textContent = 'Error · Gemini timed out. Try again.';
     } else if (error instanceof TypeError || error instanceof GeminiUnavailable) {
-      const detail = error instanceof GeminiUnavailable ? error.message : deployment.mode === 'development'
-        ? 'Start the local proxy with npm run dev:server.' : 'Check the configured cloud API connection.';
-      feedback.textContent = `Offline · Gemini unavailable. Presets and manual controls still work. ${detail}`;
+      console.warn('MoodShift AI unavailable', error);
+      feedback.textContent = 'Gemini unavailable. Presets and manual controls still work.';
     } else {
-      feedback.textContent = `Error · ${error instanceof Error ? error.message : 'Invalid Gemini reply.'}`;
+      console.warn('MoodShift AI request failed', error);
+      feedback.textContent = error instanceof UserApiError || error instanceof CloudAccessError ? error.message
+        : 'Couldn’t apply that request. Try describing the sound again.';
     }
   } finally {
     clearTimeout(deadline);

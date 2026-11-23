@@ -4,6 +4,7 @@ import { usesCloudStems } from './shared/deployment';
 import { cloudDemoCode } from './api-client';
 import { installLyricsLookup } from './lyrics-provider';
 import { installChordLookup } from './chords-provider';
+import { platformFor } from './shared/track';
 
 installLyricsLookup();
 installChordLookup();
@@ -88,7 +89,8 @@ async function select(source: SourceTab): Promise<void> {
     await remember(reply.status);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    failure = `Capture failed. Play audio and click MoodShift on that tab to retry. ${detail}`;
+    console.warn('MoodShift capture setup failed', detail);
+    failure = 'Play audio, then click MoodShift on that tab again. If it still fails, refresh the tab.';
   } finally {
     starting = undefined;
     statusChanged();
@@ -98,7 +100,8 @@ async function select(source: SourceTab): Promise<void> {
 chrome.action.onClicked.addListener(tab => {
   void chrome.sidePanel.open({ windowId: tab.windowId }).catch(console.error);
   if (tab.id === undefined) return;
-  const source = { tabId: tab.id, title: tab.title || 'Selected tab', muted: tab.mutedInfo?.muted ?? false };
+  const source = { tabId: tab.id, title: tab.title || 'Selected tab', muted: tab.mutedInfo?.muted ?? false,
+    platform: platformFor(tab.url) };
   void queue(() => select(source));
 });
 
@@ -111,13 +114,14 @@ chrome.tabs.onRemoved.addListener(tabId => {
   }).catch(console.error);
 });
 
-chrome.tabs.onUpdated.addListener((tabId, { title, mutedInfo }) => {
-  if (title === undefined && mutedInfo === undefined) return;
+chrome.tabs.onUpdated.addListener((tabId, { title, mutedInfo, url }, tab) => {
+  if (title === undefined && mutedInfo === undefined && url === undefined) return;
   void queue(async () => {
     const current = await audioStatus();
     if (current.phase !== 'capturing' || current.session.tabId !== tabId) return;
     const reply = await toAudio({
       type: 'UPDATE_TAB', sessionId: current.session.id, title, muted: mutedInfo?.muted,
+      platform: url || tab.url ? platformFor(url ?? tab.url) : undefined,
     });
     if (reply.ok) {
       await remember(reply.status);

@@ -19,15 +19,28 @@ The repository root is the Vercel project. Its Express entry point exports the a
 
 | Vercel environment variable | Value |
 | --- | --- |
-| `MOODSHIFT_DEPLOYMENT` | `cloud-demo` for all shared demos. Use `cloud-owner` only on a separate deployment whose code is exclusive to a single operator. |
+| `MOODSHIFT_DEPLOYMENT` | `cloud-demo`. |
 | `ALLOWED_EXTENSION_ORIGINS` | Exact origins such as `chrome-extension://<ID>`. Separate multiple origins with commas. |
 | `DEMO_ACCESS_TOKEN` | The random 32–128 character URL-safe code. Store it as a sensitive variable. |
 | `GEMINI_API_KEY` | The operator’s Gemini API key. Store it as a sensitive variable. |
 | `GEMINI_MODEL` | Optional. Default `gemini-3.1-flash-lite`. |
-| `SUPERMEMORY_API_KEY` | Optional in `cloud-owner` only. Store it as a sensitive variable. |
-| `CLOUD_MEMORY_INSTALLATION_ID` | Required in `cloud-owner`. Set it to that operator’s extension installation UUID. |
 
-`cloud-demo` accepts bounded local preference context for Gemini and disables Supermemory operations and profile retrieval. Deploy the matching backend revision before using local personalization in the production extension. For `cloud-owner`, enable **Advanced → Personalization** in the extension to create its installation ID, and enable Supermemory in that section to use the remote profile. In the extension side panel’s DevTools Console, run `(await chrome.storage.local.get('moodshiftPersonalization')).moodshiftPersonalization?.installationId`. Copy the UUID into the Vercel setting. The backend pins this namespace and still requires the code on every request. Keep the owner deployment and its code private. A shared code and a client-provided UUID provide no multi-user authorization.
+The API accepts bounded local sound preferences with a Gemini prompt. Existing deployments that use `cloud-owner` can keep that value or switch to `cloud-demo`. Both require the same access checks.
+
+## Provision the installed extension
+
+An existing Chrome installation continues to use its saved access code. For a new authorized installation, open the MoodShift side panel's DevTools Console and run this snippet. Enter the operator-provided code in the prompt. Use the side panel's extension context.
+
+```js
+{
+  const code = prompt('Enter the access code provided by your MoodShift operator')?.trim();
+  if (code && /^[A-Za-z0-9_-]{32,128}$/.test(code)) {
+    await chrome.storage.local.set({ moodshiftDemoAccessCode: code });
+  }
+}
+```
+
+The production backend still verifies the bearer token and the extension origin. The AWS worker also authenticates connections. Keep the credential in the local Chrome profile and backend secret settings.
 
 ## Deploy from the dashboard
 
@@ -35,7 +48,7 @@ The repository root is the Vercel project. Its Express entry point exports the a
 2. On the import screen, leave **Root Directory** at the repository root (`./`). Use the **Express** preset and default Express build settings. The extension shares TypeScript validation with the server, so selecting `server/` would hide those imports.
 3. Enter the environment variables above in **Environment Variables** for **Production**. Enable them for **Preview** only when you intend to test that branch with its own credentials. If import initially tracks `main`, set the dedicated project’s production branch to `feature/cloud-deployment` in **Settings → Environments → Production → Branch Tracking** and deploy that branch. The CLI below can also deploy the current branch directly to Production.
 4. Deploy the production revision. Copy the HTTPS production domain from **Domains** and open `https://<project>.vercel.app/health`. Expect HTTP 200 with `ok: true`, the model name, and `aiConfigured: true` when a Gemini key is present. Health checks key presence. Use the [smoke test](CLOUD_SMOKE_TEST.md) to verify actual model access.
-5. In `extension/.env.local`, set `API_BASE_URL` to the production domain listed under **Domains**. Verify its `/health` returns JSON without a Vercel login. Set `STEM_WS_URL` to the AWS WSS address, or use `ws://127.0.0.1:8788` for the local stem helper. Start the local helper with the extension ID shown for `extension/dist-cloud` in `chrome://extensions`. Rebuild with `npm run build:extension -- --mode production` and reload `extension/dist-cloud` in Chrome. Open **Private demo access**, enter the code, and click **Save demo code**.
+5. In `extension/.env.local`, set `API_BASE_URL` to the production domain listed under **Domains**. Verify its `/health` returns JSON without a Vercel login. Set `STEM_WS_URL` to the AWS WSS address, or use `ws://127.0.0.1:8788` for the local stem helper. Start the local helper with the extension ID shown for `extension/dist-cloud` in `chrome://extensions`. Rebuild with `npm run build:extension -- --mode production` and reload `extension/dist-cloud` in Chrome. Follow [operator provisioning](#provision-the-installed-extension) if this is a new installation.
 
 ## Deploy using the CLI
 
@@ -51,13 +64,13 @@ npx vercel@latest env add GEMINI_API_KEY production --type secret
 npx vercel@latest deploy --prod
 ```
 
-For owner mode, add `CLOUD_MEMORY_INSTALLATION_ID` and `SUPERMEMORY_API_KEY` through the dashboard or equivalent `vercel env add` commands before deploying. To check a linked production build on your machine, use `npx vercel@latest pull --yes --environment=production` then `npx vercel@latest build --prod`. The pulled project settings and environment files are local to `.vercel/`. Keep them private. Use the returned deployment’s production alias for `/health` and the extension configuration.
+To check a linked production build on your machine, use `npx vercel@latest pull --yes --environment=production` then `npx vercel@latest build --prod`. The pulled project settings and environment files are local to `.vercel/`. Keep them private. Use the returned deployment’s production alias for `/health` and the extension configuration.
 
 ## Access controls, costs, and rotation
 
-- **Shared demo limits.** The API has per-instance limits of 12 authenticated requests per minute and 250 per UTC day. Serverless instances and deploys reset or multiply these counters. Configure a Vercel **Firewall → Configure → New Rule** rate limit on the two API paths if your plan supports it. Set Gemini project quotas and alerts independently. Review Vercel usage and configure Spend Management notifications or production pause where your plan supports it. [Vercel rate limits](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting) · [Spend Management](https://vercel.com/docs/spend-management)
+- **Shared demo limits.** The API has per-instance limits of 12 authenticated requests per minute and 250 per UTC day. Serverless instances and deploys reset or multiply these counters. Configure a Vercel **Firewall → Configure → New Rule** rate limit for the interpretation endpoint if your plan supports it. Set Gemini project quotas and alerts independently. Review Vercel usage and configure Spend Management notifications or production pause where your plan supports it. [Vercel rate limits](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting) · [Spend Management](https://vercel.com/docs/spend-management)
 - **Browser requests.** The server accepts exactly the configured browser origins. Requests without an Origin can use the API with the same bearer code. Keep Vercel’s interactive deployment protection off the production alias used by the extension, or the login page will block background requests. Use application authentication and WAF restrictions on the demo alias. A public launch needs per-user authentication, authorization, and durable quotas.
-- **Rotation.** Update `DEMO_ACCESS_TOKEN` on Vercel and the AWS worker, redeploy the Vercel production alias, restart the worker, and enter the new code in the extension. Remove old reachable Vercel deployments or apply deployment protection to them so their old code cannot still be used. To revoke GPU access immediately, stop the service or restrict the security group.
-- **Diagnose.** HTTP `401` means the code is missing or wrong. HTTP `403` indicates an unapproved browser origin, shared-demo memory access, or the wrong owner installation. Check Vercel logs for startup configuration errors with the variable names only. HTTP `429` can come from the application, firewall, or Gemini quota. Local development still uses `npm run dev:server` on loopback without a demo code.
+- **Rotation.** Update `DEMO_ACCESS_TOKEN` on Vercel and the AWS worker, redeploy the Vercel production alias, restart the worker, and provision the new code. Remove old reachable Vercel deployments or apply deployment protection to them so their old code cannot still be used. To revoke GPU access immediately, stop the service or restrict the security group.
+- **Diagnose.** HTTP `401` means the code is missing or wrong. HTTP `403` indicates an unapproved browser origin. Check Vercel logs for startup configuration errors with the variable names only. HTTP `429` can come from the application, firewall, or Gemini quota. Local development still uses `npm run dev:server` on loopback without a demo code.
 
 [Vercel Express documentation](https://vercel.com/docs/frameworks/backend/express) · [Vercel environment variables](https://vercel.com/docs/environment-variables)

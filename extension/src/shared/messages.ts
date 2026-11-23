@@ -1,6 +1,7 @@
 import type { AudioFeatures, CaptureSession, CaptureStatus, MonitorMode, StemMode } from './types';
 import type { EffectPatch } from './effects';
 import type { ReverbPatch, ReverbSettings } from './reverb';
+import type { SourcePlatform } from './track';
 
 type EffectChange = { type: 'APPLY_EFFECTS'; sessionId: string; patch: EffectPatch; baseRevision?: number; reverb?: ReverbSettings };
 type ReverbChange = { type: 'SET_REVERB'; sessionId: string; patch: ReverbPatch };
@@ -18,7 +19,7 @@ export type AudioCommand =
   | { type: 'READ' }
   | { type: 'START'; session: CaptureSession; streamId: string }
   | { type: 'STOP'; sessionId: string }
-  | { type: 'UPDATE_TAB'; sessionId: string; title?: string; muted?: boolean }
+  | { type: 'UPDATE_TAB'; sessionId: string; title?: string; muted?: boolean; platform?: SourcePlatform }
   | EffectChange
   | ReverbChange
   | MonitorChange

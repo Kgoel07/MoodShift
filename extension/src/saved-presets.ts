@@ -116,7 +116,10 @@ export async function applySavedPreset(input: SavedPreset, capture: Capture, cur
   };
   const requireCapture = (reply: Awaited<ReturnType<typeof toWorker>>): Capture => {
     assertCurrent();
-    if (!reply.ok) throw new Error(reply.message);
+    if (!reply.ok) {
+      console.warn('MoodShift could not restore saved audio settings', reply.message);
+      throw new Error('Couldn’t apply this preset. Check the playing tab and try again.');
+    }
     if (reply.status.phase !== 'capturing' || reply.status.session.id !== sessionId) {
       throw new Error('The selected tab changed during preset application.');
     }

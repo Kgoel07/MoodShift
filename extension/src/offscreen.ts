@@ -43,7 +43,8 @@ async function stop(sessionId: string, error?: string): Promise<void> {
   const capture = live;
   live = undefined;
   const restoring = releaseSpeed(capture);
-  problem = error;
+  if (error) console.warn('MoodShift capture ended', error);
+  problem = error ? 'Audio stopped. Play the song and click MoodShift to reconnect.' : undefined;
   clearInterval(timer);
   stemStream?.close();
   engine?.disconnect();
@@ -172,7 +173,6 @@ async function start(session: CaptureSession, streamId: string): Promise<void> {
     stream?.getTracks().forEach(track => track.stop());
     const message = error instanceof Error ? error.message : 'Chrome could not capture audio.';
     await stop(session.id, message);
-    problem = message;
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -295,6 +295,7 @@ chrome.runtime.onMessage.addListener((message: AudioMessage, _sender, sendRespon
         capture.monitor = message.monitor;
       } else {
         if (message.title !== undefined) capture.session.title = message.title;
+        if (message.platform !== undefined) capture.session.platform = message.platform;
         if (message.muted !== undefined) {
           capture.engine.setMuted(message.muted);
           capture.session.muted = message.muted;

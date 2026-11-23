@@ -80,8 +80,8 @@ export async function checkReverb({ send, evaluate, find, attach, until, url, or
     };`);
   let view = await attach((await find(t => t.url === origin + '/sidepanel.html', 'reverb panel')).targetId);
   const setupPanel = async () => {
-    await until(() => evaluate(view, "Boolean(document.querySelector('#advanced-tab') && document.querySelector('#reverb-enabled') && !document.querySelector('#reverb-enabled').disabled)"), Boolean, 'Reverb panel ready');
-    await evaluate(view, `document.querySelector('#advanced-tab').click(); window.reverbRequests = 0;
+    await until(() => evaluate(view, "Boolean(document.querySelector('#settings-tab') && document.querySelector('#reverb-enabled') && !document.querySelector('#reverb-enabled').disabled)"), Boolean, 'Reverb panel ready');
+    await evaluate(view, `document.querySelector('#settings-tab').click(); document.querySelector('#audio-effects').open = true; window.reverbRequests = 0;
       window.fetch = () => { window.reverbRequests++; return Promise.reject(new Error('Reverb must be local')); };`);
   };
   await setupPanel();
@@ -99,7 +99,7 @@ export async function checkReverb({ send, evaluate, find, attach, until, url, or
   await evaluate(view, `const amount = document.querySelector('#effect-reverbMix'); amount.value = '0.19'; amount.dispatchEvent(new Event('input'));
     const duration = document.querySelector('#reverb-duration'); duration.value = '1.1'; duration.dispatchEvent(new Event('input')); duration.dispatchEvent(new Event('change'));`);
   await until(state, value => value.effects.reverbMix === 0.19 && value.reverb.duration === 1.1, 'Customized reverb');
-  await evaluate(view, `document.querySelector('#advanced-presets').open = true; document.querySelector('#saved-presets').open = true;
+  await evaluate(view, `document.querySelector('#saved-presets').open = true;
     const name = document.querySelector('#saved-preset-name'); name.value = 'Reverb room'; name.dispatchEvent(new Event('input'));`);
   await until(() => evaluate(view, "document.querySelector('#saved-preset-save').disabled"), value => !value, 'Reverb preset can be saved');
   await evaluate(view, "document.querySelector('#saved-preset-save').click()");
@@ -164,6 +164,19 @@ export async function checkReverb({ send, evaluate, find, attach, until, url, or
     const captured = await until(state, value => value.phase === 'capturing' && value.features.rms > 0.001, 'YouTube reverb capture', 80);
     view = await attach((await find(t => t.url === origin + '/sidepanel.html', 'YouTube reverb panel')).targetId);
     await setupPanel(); await choose('slowed');
+    if (process.env.MOODSHIFT_UI_TEST) {
+      const videoId = new URL(youtube).searchParams.get('v');
+      await until(() => evaluate(view, `({ title: document.querySelector('#status').textContent,
+        artist: document.querySelector('#track-artist').textContent,
+        platform: document.querySelector('#track-platform').textContent,
+        image: document.querySelector('#song-artwork').getAttribute('src'),
+        loaded: !document.querySelector('#song-artwork').hidden })`),
+      track => track.platform === 'YouTube' && track.artist && track.image?.includes(`/${videoId}/`) && track.loaded, 'Current song artwork and artist', 40);
+      await evaluate(view, "document.querySelector('#home-tab').click()");
+      assert.equal(await evaluate(view, "document.querySelector('#home-lyrics').contains(document.querySelector('#lyrics'))"), true);
+      await evaluate(view, "document.querySelector('#settings-tab').click()");
+      console.log('Live YouTube metadata, thumbnail loading and Home lyrics placement passed.');
+    }
     await until(state, value => value.reverb?.speed.state === 'active', 'Slowed YouTube acknowledgment', 48);
     assert.equal(await evaluate(video, "document.querySelector('#movie_player video').playbackRate"), 1.0625);
     await wait(2400);
@@ -195,6 +208,7 @@ export async function checkReverb({ send, evaluate, find, attach, until, url, or
     assert.equal(await evaluate(video, "document.querySelector('#movie_player video').playbackRate"), 1.25);
     assert.equal(switched.effects.reverbMix, 0);
     await until(() => evaluate(view, "document.querySelector('#status').textContent.includes('Reverb local audio') && !document.querySelector('#stop').disabled"), Boolean, 'Switched panel state');
+    assert.equal(await evaluate(view, "document.querySelector('#song-artwork').hidden && !document.querySelector('#song-artwork').hasAttribute('src')"), true);
     await evaluate(view, "document.querySelector('#stop').click()");
     await until(state, value => value.phase === 'ready', 'Switched source stopped');
     assert.ok(captured.features.rms > 0);

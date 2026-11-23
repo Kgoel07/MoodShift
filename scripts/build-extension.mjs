@@ -34,6 +34,7 @@ if (config.mode === 'production') {
   };
 }
 await mkdir(outdir, { recursive: true });
+await mkdir(resolve(outdir, 'assets'), { recursive: true });
 await build({
   entryPoints: ['background', 'offscreen', 'sidepanel', 'stem-worker', 'stem-worklet', 'youtube-playback']
     .map(name => `extension/src/${name}.ts`),
@@ -45,6 +46,7 @@ await build({
   logLevel: 'info',
 });
 await Promise.all([
+  ...Object.values(manifest.icons).map(path => copyFile(new URL(path, dir), resolve(outdir, path))),
   config.mode === 'production'
     ? writeFile(resolve(outdir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
     : copyFile(new URL('manifest.json', dir), resolve(outdir, 'manifest.json')),

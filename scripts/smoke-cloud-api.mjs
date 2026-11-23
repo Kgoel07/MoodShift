@@ -3,11 +3,11 @@ import { parseArgs } from 'node:util';
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
-  options: { authorized: { type: 'boolean' }, owner: { type: 'boolean' } },
+  options: { authorized: { type: 'boolean' } },
 });
 const [rawUrl, origin] = positionals;
 if (!rawUrl || !/^chrome-extension:\/\/[a-p]{32}$/.test(origin ?? '')) {
-  throw new Error('Usage: node scripts/smoke-cloud-api.mjs https://API_DOMAIN chrome-extension://ID [--authorized] [--owner]');
+  throw new Error('Usage: node scripts/smoke-cloud-api.mjs https://API_DOMAIN chrome-extension://ID [--authorized]');
 }
 const base = new URL(rawUrl);
 if (base.protocol !== 'https:' || (rawUrl !== base.origin && rawUrl !== base.origin + '/')) {
@@ -57,9 +57,5 @@ if (values.authorized) {
   const result = await response.json();
   assert.equal(result.mode, 'patch');
   assert.ok(result.patch?.bassDb > 0 && !Object.hasOwn(result.patch, 'reverbMix'));
-  if (!values.owner) {
-    const memory = await post('/api/memory', { action: 'view', installationId: '48d6a9cd-bb63-4a3f-8036-1ca90c718c50' }, auth);
-    assert.equal(memory.status, 403, 'Shared demo must refuse memory access');
-  }
   console.log('Live authorized Gemini patch passed.');
 }

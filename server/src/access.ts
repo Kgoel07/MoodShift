@@ -1,14 +1,12 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { RequestHandler } from 'express';
-import { installationIdPattern } from '../../extension/src/shared/preferences.js';
 
 export const extensionOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
 const tokenFormat = /^[A-Za-z0-9_-]{32,128}$/;
 type OriginPolicy = { origins: ReadonlySet<string> };
 export type AccessPolicy =
   | { mode: 'local'; origins?: ReadonlySet<string> }
-  | (OriginPolicy & { mode: 'cloud-demo'; token: string })
-  | (OriginPolicy & { mode: 'cloud-owner'; token: string; installationId: string });
+  | (OriginPolicy & { mode: 'cloud-demo'; token: string });
 
 export function accessFromEnv(env: NodeJS.ProcessEnv, target: 'local' | 'cloud'): AccessPolicy {
   const supplied = env.ALLOWED_EXTENSION_ORIGINS?.trim();
@@ -22,12 +20,8 @@ export function accessFromEnv(env: NodeJS.ProcessEnv, target: 'local' | 'cloud')
   if (!origins?.size || !tokenFormat.test(token) || (mode !== 'cloud-demo' && mode !== 'cloud-owner')) {
     throw new Error('Set MOODSHIFT_DEPLOYMENT, ALLOWED_EXTENSION_ORIGINS and a 32–128 character URL-safe DEMO_ACCESS_TOKEN.');
   }
-  if (mode === 'cloud-demo') return { mode, origins, token };
-  const installationId = env.CLOUD_MEMORY_INSTALLATION_ID?.trim().toLowerCase();
-  if (!installationId || !installationIdPattern.test(installationId)) {
-    throw new Error('Set CLOUD_MEMORY_INSTALLATION_ID to the operator installation UUID.');
-  }
-  return { mode, origins, token, installationId };
+  // Existing owner deployments still use the same exact origin and bearer-token checks.
+  return { mode: 'cloud-demo', origins, token };
 }
 
 const digest = (value: string) => createHash('sha256').update(value).digest();
@@ -39,7 +33,7 @@ export function demoGuard(token: string): RequestHandler {
   return (req, res, next) => {
     const supplied = /^Bearer ([A-Za-z0-9_-]{32,128})$/.exec(req.get('Authorization') ?? '')?.[1];
     if (!supplied || !timingSafeEqual(digest(supplied), expected)) {
-      res.status(401).json({ error: 'Enter the private demo access code in MoodShift settings.' });
+      res.status(401).json({ error: 'This installation is not authorized for online processing.' });
       return;
     }
     const time = Date.now();

@@ -5,13 +5,11 @@ import { neutralEffects } from '../extension/src/shared/effects';
 import { silentFeatures } from '../extension/src/shared/types';
 import { accessFromEnv } from '../server/src/access';
 import { createApp } from '../server/src/index';
-import { createMemory } from '../server/src/memory';
 
 const origin = 'chrome-extension://' + 'a'.repeat(32);
 const otherOrigin = 'chrome-extension://' + 'b'.repeat(32);
 const token = 'test-token-' + 'z'.repeat(32);
 const owner = '48d6a9cd-bb63-4a3f-8036-1ca90c718c50';
-const otherInstallation = '54c3a3ad-1228-443b-b625-084acf29a163';
 const deployment = { MOODSHIFT_DEPLOYMENT: 'cloud-demo', ALLOWED_EXTENSION_ORIGINS: origin, DEMO_ACCESS_TOKEN: token };
 const config = { apiKey: 'fake-gemini-key', model: 'test-model' };
 const prompt = { prompt: 'More bass', currentEffects: neutralEffects, audioFeatures: silentFeatures };
@@ -50,7 +48,7 @@ describe('cloud API deployment', () => {
     expect(() => accessFromEnv({}, 'cloud')).toThrow('MOODSHIFT_DEPLOYMENT');
     expect(() => accessFromEnv({ ...deployment, ALLOWED_EXTENSION_ORIGINS: '*' }, 'cloud')).toThrow('exact');
     expect(() => accessFromEnv({ ...deployment, DEMO_ACCESS_TOKEN: 'short' }, 'cloud')).toThrow('DEMO_ACCESS_TOKEN');
-    expect(() => accessFromEnv({ ...deployment, MOODSHIFT_DEPLOYMENT: 'cloud-owner' }, 'cloud')).toThrow('CLOUD_MEMORY_INSTALLATION_ID');
+    expect(() => accessFromEnv({ ...deployment, MOODSHIFT_DEPLOYMENT: 'cloud-owner' }, 'cloud')).not.toThrow();
     expect(accessFromEnv({ ALLOWED_EXTENSION_ORIGINS: origin + ', ' + otherOrigin }, 'local').origins)
       .toEqual(new Set([origin, otherOrigin]));
   });
@@ -66,14 +64,13 @@ describe('cloud API deployment', () => {
       const unavailable = await post(base + '/api/interpret', prompt);
       expect(unavailable.status).toBe(503);
       expect(await unavailable.json()).toEqual({ error: 'Gemini is not configured on this cloud backend.' });
-      expect((await post(base + '/api/memory', { action: 'view', installationId: owner })).status).toBe(403);
+      expect((await post(base + '/api/memory', { action: 'view', installationId: owner })).status).toBe(404);
     });
   });
 
   it('blocks wrong origins and credentials before parsing or spending quota on upstreams', async () => {
     const upstream = gemini();
-    const sdk = vi.fn<typeof fetch>();
-    await serve(createApp(config, upstream, createMemory('test-memory-key', sdk), accessFromEnv(deployment, 'cloud')), async base => {
+    await serve(createApp(config, upstream, accessFromEnv(deployment, 'cloud')), async base => {
       const endpoint = base + '/api/interpret';
       const options = await fetch(endpoint, { method: 'OPTIONS', headers: { Origin: origin } });
       expect(options.status).toBe(204);
@@ -82,39 +79,15 @@ describe('cloud API deployment', () => {
       expect((await post(endpoint, prompt, token, otherOrigin)).status).toBe(403);
       expect((await post(endpoint, prompt, 'x'.repeat(43))).status).toBe(401);
       expect((await fetch(endpoint, { method: 'POST', body: 'invalid' })).status).toBe(401);
-      expect((await post(base + '/api/memory', { action: 'clear', installationId: owner })).status).toBe(403);
+      expect((await post(base + '/api/memory', { action: 'clear', installationId: owner })).status).toBe(404);
       expect(upstream).not.toHaveBeenCalled();
-      expect(sdk).not.toHaveBeenCalled();
-      const response = await post(endpoint, { ...prompt, personalization: { enabled: true, installationId: owner } });
+      const response = await post(endpoint, prompt);
       expect(await response.json()).toMatchObject({ patch: { bassDb: 2 } });
-      expect(sdk).not.toHaveBeenCalled();
       expect(await (await fetch(base + '/health')).text()).not.toMatch(/fake-gemini-key|test-token/);
     });
   });
 
-  it('pins operator memory lookup and management to the configured installation', async () => {
-    const sdk = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({
-      profile: { static: [{ memory: 'Prefers bass.' }], dynamic: [] },
-      documents: [{ content: 'Prefers bass.' }], pagination: { hasMore: false },
-    }));
-    const upstream = gemini();
-    const policy = accessFromEnv({ ...deployment, MOODSHIFT_DEPLOYMENT: 'cloud-owner', CLOUD_MEMORY_INSTALLATION_ID: owner }, 'cloud');
-    await serve(createApp(config, upstream, createMemory('test-memory-key', sdk), policy), async base => {
-      for (const action of ['view', 'clear', 'remember']) {
-        const body = { action, installationId: otherInstallation, ...(action === 'remember' ? { enabled: true, preference: 'Bass.' } : {}) };
-        expect((await post(base + '/api/memory', body)).status).toBe(403);
-      }
-      expect((await post(base + '/api/interpret', { ...prompt, personalization: { enabled: true, installationId: otherInstallation } })).status).toBe(200);
-      expect(sdk).not.toHaveBeenCalled();
-      const reply = await post(base + '/api/memory', { action: 'view', installationId: owner });
-      expect(await reply.json()).toEqual({ preferences: ['Prefers bass.'], hasMore: false });
-      expect((await post(base + '/api/interpret', { ...prompt, personalization: { enabled: true, installationId: owner } })).status).toBe(200);
-      expect(sdk).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  it('passes bounded installation-local preferences through shared demo without a Supermemory lookup', async () => {
-    const sdk = vi.fn<typeof fetch>();
+  it('passes bounded installation-local preferences through shared demo with no remote profile', async () => {
     const currentEffects = { ...neutralEffects, reverbMix: 0.3, bassDb: 4 };
     const input = { ...prompt, prompt: 'Remove all bass and keep the reverb.', currentEffects };
     const remember = ['I prefer warm bass and minimal distortion.'];
@@ -126,7 +99,7 @@ describe('cloud API deployment', () => {
         text: JSON.stringify({ mode: 'patch', patch: { bassDb: -12 }, summary: 'Reduced bass.', unsupported: [] }),
       }] } }] });
     });
-    await serve(createApp(config, upstream, createMemory('test-memory-key', sdk), accessFromEnv(deployment, 'cloud')), async base => {
+    await serve(createApp(config, upstream, accessFromEnv(deployment, 'cloud')), async base => {
       const endpoint = base + '/api/interpret';
       expect((await post(endpoint, { ...input, localPreferences: remember }, 'bad')).status).toBe(401);
       for (const invalid of [Array(5).fill('Warm bass'), ['x'.repeat(241)], ['First\nSecond']]) {
@@ -135,14 +108,13 @@ describe('cloud API deployment', () => {
       const response = await post(endpoint, { ...input, localPreferences: remember });
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ patch: { bassDb: -12 } });
-      expect(sdk).not.toHaveBeenCalled();
       expect(upstream).toHaveBeenCalledTimes(1);
     });
   });
 
   it('enforces a bounded authenticated per-instance quota before upstream requests', async () => {
     const upstream = gemini();
-    await serve(createApp(config, upstream, undefined, accessFromEnv(deployment, 'cloud')), async base => {
+    await serve(createApp(config, upstream, accessFromEnv(deployment, 'cloud')), async base => {
       vi.spyOn(Date, 'now').mockReturnValue(0);
       try {
         for (let i = 0; i < 12; i++) expect((await post(base + '/api/interpret', prompt)).status).toBe(200);

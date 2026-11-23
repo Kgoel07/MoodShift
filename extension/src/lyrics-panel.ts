@@ -11,6 +11,7 @@ const formatOffset = (value: number) => Math.max(-10, Math.min(10, Number.isFini
 
 export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePlayback | null, offset: number) => void) {
   const form = root.querySelector<HTMLFormElement>('#lyrics-search')!;
+  const options = root.querySelector<HTMLDetailsElement>('#lyric-options')!;
   const title = root.querySelector<HTMLInputElement>('#lyrics-title')!;
   const artist = root.querySelector<HTMLInputElement>('#lyrics-artist')!;
   const search = root.querySelector<HTMLButtonElement>('#lyrics-submit')!;
@@ -33,6 +34,7 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
 
   function refreshControls(): void {
     form.hidden = session.playback === null;
+    options.hidden = form.hidden;
     search.disabled = !session.playback?.song.duration || Date.now() < allowSearchAt;
   }
 
@@ -91,15 +93,15 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
         viewport.hidden = false;
         break;
       }
-      case 'instrumental': status.textContent = 'LRCLIB lists this recording as instrumental.'; break;
-      case 'invalid': status.textContent = 'Check the song title and artist. A finite video duration is needed.'; break;
-      case 'missing': status.textContent = 'No matching lyrics. Check the song title and artist and try again.'; break;
+      case 'instrumental': status.textContent = 'This recording is listed as instrumental.'; break;
+      case 'invalid': status.textContent = 'Check the song details and try again once the video is playing.'; break;
+      case 'missing': status.textContent = 'Lyrics unavailable for this recording.'; break;
       case 'ambiguous': status.textContent = 'Multiple recordings matched. Check the title and artist.'; break;
-      case 'error': status.textContent = 'Could not reach LRCLIB or read its reply. Try again shortly.'; break;
+      case 'error': status.textContent = 'Couldn’t load lyrics. Try again shortly.'; break;
       case 'limited': {
         allowSearchAt = result.retryAt;
         const seconds = Math.max(1, Math.ceil((allowSearchAt - Date.now()) / 1000));
-        const notice = 'LRCLIB asks us to wait. Try again in ' + seconds + ' s.';
+        const notice = 'Lyrics are busy. Try again in ' + seconds + ' s.';
         status.textContent = notice;
         clearTimeout(cooldownTimer);
         cooldownTimer = setTimeout(() => {
@@ -184,7 +186,7 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
   }
 
   function connect(): void {
-    if (!source || connection) return;
+    if (!source || connection || (source.platform && source.platform !== 'youtube')) return;
     const { id, tabId } = source;
     const port = chrome.tabs.connect(tabId, { name: youtubePlaybackPort, frameId: 0 });
     connection = port;
@@ -261,7 +263,7 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
 
   return {
     setSource(next?: CaptureSession): void {
-      if (next?.id === source?.id) return;
+      if (next?.id === source?.id && next?.platform === source?.platform) return;
       const old = connection;
       connection = undefined;
       old?.disconnect();
@@ -273,9 +275,8 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
       title.value = '';
       artist.value = '';
       refreshControls();
-      status.textContent = next
-        ? 'Waiting for a YouTube video on the selected tab…'
-        : 'Select a playing YouTube tab with the MoodShift icon.';
+      status.textContent = next && (!next.platform || next.platform === 'youtube')
+        ? 'Waiting for the video…' : 'Lyrics are available on supported YouTube videos.';
       connect();
     },
   };
