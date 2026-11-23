@@ -67,10 +67,13 @@ describe('extension deployment settings', () => {
     }
   });
 
-  it('uses plain language for access, rate and service errors', () => {
+  it('uses plain language for access, rate and service errors', async () => {
     const unauthorized = Response.json({ error: 'Internal diagnostic' }, { status: 401 });
-    expect(apiErrorDetail(unauthorized)).toContain('Contact whoever provided MoodShift');
-    expect(apiErrorDetail(new Response(null, { status: 429 }))).toContain('Try again in a moment');
-    expect(apiErrorDetail(new Response(null, { status: 502 }))).toContain('unavailable right now');
+    expect(await apiErrorDetail(unauthorized)).toContain('Contact whoever provided MoodShift');
+    expect(await apiErrorDetail(new Response(null, { status: 429 }))).toContain('Try again in a moment');
+    expect(await apiErrorDetail(new Response(null, { status: 502 }))).toContain('unavailable right now');
+    expect(await apiErrorDetail(Response.json({ code: 'gemini_access', error: 'private text' }, { status: 503 })))
+      .toContain('Google rejected the Gemini key or model');
+    expect(await apiErrorDetail(Response.json({ code: 'origin_denied' }, { status: 403 }))).toContain('extension ID');
   });
 });

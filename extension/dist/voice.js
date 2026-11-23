@@ -78,12 +78,57 @@
       redirect: "error"
     });
   }
-  function apiErrorDetail(response) {
-    console.warn("MoodShift online processing returned an error", response.status);
-    if (response.status === 401 || response.status === 403) return cloudAccessMessage;
+  var apiErrors = {
+    origin_denied: "This browser\u2019s extension ID is missing from the backend\u2019s allowed origins.",
+    gemini_not_configured: "The backend is missing GEMINI_API_KEY. Set it and restart or redeploy the backend.",
+    gemini_access: "Google rejected the Gemini key or model. Check key access and GEMINI_MODEL on the backend.",
+    gemini_quota: "Gemini quota reached. Check the Google AI Studio project limits and try again later.",
+    gemini_busy: "The configured Gemini model is temporarily busy. Try again shortly.",
+    gemini_request: "Google rejected the request. Check that GEMINI_MODEL supports structured output and audio for voice commands.",
+    gemini_network: "The backend could not reach Gemini. Try again shortly.",
+    gemini_timeout: "Gemini timed out. Try again.",
+    gemini_response: "Gemini returned an unusable response. Try a shorter command.",
+    gemini_upstream: "Gemini returned a temporary service error. Try again shortly."
+  };
+  var olderBackendMessage = "Pitch and other newer commands need an updated MoodShift backend. Redeploy the API from the current branch.";
+  async function apiErrorDetail(response, config = deployment) {
+    const json = response.headers.get("Content-Type")?.includes("application/json");
+    if (json) {
+      const payload = await response.json().catch(() => null);
+      if (typeof payload?.code === "string" && Object.hasOwn(apiErrors, payload.code)) return apiErrors[payload.code];
+    }
+    if ((response.status === 401 || response.status === 403) && !json && config.mode === "production") {
+      return "The API returned a sign-in or access page. Use the Vercel domain where /health opens without a login.";
+    }
+    if (response.status === 401) return cloudAccessMessage;
+    if (response.status === 403) return apiErrors.origin_denied;
     if (response.status === 429) return "Too many requests right now. Try again in a moment.";
+    if (response.status === 504) return apiErrors.gemini_timeout;
+    if (response.status === 413) return "The recording is too large. Try a shorter command.";
+    if (response.status === 503 && !json) return "The API could not start. Check the Vercel deployment logs and environment variables.";
     if (response.status >= 500) return "Online processing is unavailable right now. Try again shortly.";
     return "Couldn\u2019t apply that request. Try describing the sound again.";
+  }
+  async function apiConnectionDetail(signal, config = deployment) {
+    try {
+      const response = await fetch(new URL("/health", config.apiBaseUrl).href, {
+        credentials: "omit",
+        redirect: "manual",
+        signal: AbortSignal.any([signal, AbortSignal.timeout(3e3)])
+      });
+      if (config.mode === "production" && (response.type === "opaqueredirect" || response.status === 401 || response.status === 403)) {
+        return "The API requires a browser login. Use the Vercel domain where /health opens without a login.";
+      }
+      if (response.ok) {
+        const health = await response.json();
+        if (health.aiConfigured === false) return apiErrors.gemini_not_configured;
+        if (health.ok === true && !response.headers.has("X-MoodShift-Controls")) return olderBackendMessage;
+        return "The backend responds, but the command request failed. Check the extension origin allowlist and try again.";
+      }
+    } catch {
+      signal.throwIfAborted();
+    }
+    return config.mode === "development" ? "Gemini unavailable. Start the local MoodShift proxy with npm run dev:server." : "Gemini unavailable. Check the configured API URL and open /health on that domain.";
   }
 
   // extension/src/shared/equalizer.ts
@@ -819,9 +864,10 @@
     if (result.stemMode) actions.push({ control: "mix", operation: "set", value: result.stemMode });
     return { actions, summary: result.summary, unsupported: result.unsupported };
   }
-  async function runNaturalCommand(text, options) {
-    const prompt = text.trim();
-    if (!prompt || prompt.length > 500) throw new CommandFeedbackError("Try a short audio command of up to 500 characters.");
+  async function runNaturalCommand(input, options) {
+    const audio = typeof input === "string" ? void 0 : input;
+    const prompt = typeof input === "string" ? input.trim() : "";
+    if (!audio && (!prompt || prompt.length > 500)) throw new CommandFeedbackError("Try a short audio command of up to 500 characters.");
     options.signal.throwIfAborted();
     const reply = await toWorker({ type: "GET_STATUS" });
     if (!reply.ok || reply.status.phase !== "capturing" || options.sessionId && reply.status.session.id !== options.sessionId) {
@@ -837,13 +883,14 @@
     const [display, saved, localPreferences] = await Promise.all([
       loadDisplay(),
       loadControlPresets(),
-      promptPreferences(prompt).catch(() => void 0)
+      audio ? void 0 : promptPreferences(prompt).catch(() => void 0)
     ]);
     options.signal.throwIfAborted();
     const { session, effects, revision, features, outputPaused } = capture;
     const direct = directStemIntent(prompt);
     let result;
     let legacy = false;
+    let transcript2;
     if (direct === "unsupported") return { message: "Unsupported \xB7 Beat, drum and bass isolation require separate stems." };
     if (direct) {
       result = {
@@ -852,38 +899,43 @@
         unsupported: []
       };
     } else {
-      const request2 = { prompt, currentEffects: effects, audioFeatures: session.muted || outputPaused ? silentFeatures : features, localPreferences };
+      const request2 = { currentEffects: effects, audioFeatures: session.muted || outputPaused ? silentFeatures : features, localPreferences };
       const { effects: _effects, ...settings } = controlState(capture, display);
       const names = (rows) => rows.map((row) => row.name).filter((name) => !/[\u0000-\u001f\u007f]/.test(name)).slice(0, controlPresetLimit);
       const deadline = AbortSignal.timeout(15e3);
       const signal = AbortSignal.any([options.signal, deadline]);
       try {
-        let response = await apiRequest("/api/interpret/v2", { ...request2, controls: {
+        const command = { ...request2, controls: {
           ...settings,
           savedAudio: names(saved.audio),
           savedEq: names(saved.eq),
           youtubeWatch: session.platform === "youtube"
-        } }, signal);
+        } };
+        let response = audio ? await apiRequest("/api/interpret/voice", { ...command, audio }, signal) : await apiRequest("/api/interpret/v2", { ...command, prompt }, signal);
         if (response.status === 404) {
+          if (audio) throw new CommandFeedbackError("Voice commands need the updated MoodShift API. Redeploy the backend or start the updated local proxy.");
           legacy = true;
           await response.body?.cancel();
-          response = await apiRequest("/api/interpret", request2, signal);
+          response = await apiRequest("/api/interpret", { ...request2, prompt }, signal);
         }
-        if (response.status === 504) throw new CommandFeedbackError("Gemini timed out. Try again.");
-        if (response.status >= 500) throw new CommandFeedbackError("Gemini unavailable. Presets and manual controls still work.");
-        if (!response.ok) throw new CommandFeedbackError(apiErrorDetail(response));
+        if (!response.ok) throw new CommandFeedbackError(await apiErrorDetail(response));
         const body = await response.json();
-        result = legacy ? legacyResult(body, effects) : parseControlResult(body);
+        if (audio) {
+          const { transcript: spoken, ...plan } = body;
+          result = parseControlResult(plan);
+          if (typeof spoken !== "string" || spoken.length > 500 || !spoken.trim() && result.actions.length) throw new Error("Invalid transcript.");
+          transcript2 = spoken.trim();
+        } else result = legacy ? legacyResult(body, effects) : parseControlResult(body);
       } catch (error) {
         options.signal.throwIfAborted();
         if (deadline.aborted) throw new CommandFeedbackError("Gemini timed out. Try again.");
-        if (error instanceof TypeError) throw new CommandFeedbackError("Gemini unavailable. Presets and manual controls still work.");
+        if (error instanceof TypeError) throw new CommandFeedbackError(await apiConnectionDetail(options.signal));
         if (error instanceof CloudAccessError) throw new CommandFeedbackError(error.message);
         throw error;
       }
     }
-    const limitation = result.unsupported.length ? ` Unsupported \xB7 ${result.unsupported.join(", ")}` : "";
-    if (!result.actions.length) return { message: `${result.summary}${limitation}${legacy && limitation ? " The configured backend uses the older command API." : ""}` };
+    const limitation = result.unsupported.length ? ` Unsupported \xB7 ${result.unsupported.join(", ")}${legacy ? ` ${olderBackendMessage}` : ""}` : "";
+    if (!result.actions.length) return { message: result.summary + limitation, transcript: transcript2 };
     options.signal.throwIfAborted();
     options.applying?.();
     const changed = await toWorker({
@@ -901,148 +953,174 @@
     }
     const notices = changed.notices ?? [];
     const message = notices.length ? `${changed.applied ? "Settings updated. " : ""}${notices.join(" ")}` : changed.applied ? `Applied \u2713 \xB7 ${confirmation}` : `Already set. ${confirmation}`;
-    return { message: message + limitation, status: changed.status };
+    return { message: message + limitation, status: changed.status, transcript: transcript2 };
   }
 
+  // extension/src/shared/voice-audio.ts
+  var voiceMimeTypes = ["audio/webm", "audio/ogg"];
+  var voiceMaxBytes = 96 * 1024;
+  var voiceMaxSeconds = 8;
+
   // extension/src/voice.ts
-  var speechWindow = window;
-  var getRecognizer = () => speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
   var listen = document.querySelector("#voice-listen");
   var cancel = document.querySelector("#voice-cancel");
   var status = document.querySelector("#voice-status");
   var transcript = document.querySelector("#voice-transcript");
   var source;
   var request;
-  var recognizer;
+  var microphone;
+  var recorder;
   var timer;
-  var speaking = false;
-  var applying = false;
-  var speechErrors = {
-    "not-allowed": "Microphone access was blocked. Allow it in Chrome and try again.",
-    "service-not-allowed": "Speech recognition is unavailable in this Chrome profile.",
-    "audio-capture": "Chrome couldn\u2019t find a microphone. Connect one and try again.",
-    "no-speech": "I didn\u2019t catch that. Try speaking again.",
-    network: "Chrome\u2019s speech service couldn\u2019t connect. Try again or type your command in MoodShift."
-  };
-  function controls() {
-    listen.disabled = !source || Boolean(request) || !getRecognizer();
-    cancel.hidden = !request || applying;
-    status.toggleAttribute("data-listening", speaking);
+  var phase = "idle";
+  var refreshId = 0;
+  function supportedFormat() {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder !== "function") return;
+    return voiceMimeTypes.find((type) => MediaRecorder.isTypeSupported(`${type};codecs=opus`));
   }
-  function releaseMicrophone() {
-    clearTimeout(timer);
-    speaking = false;
-    const input = recognizer;
-    recognizer = void 0;
-    if (!input) return;
-    input.onstart = input.onspeechend = input.onresult = input.onerror = input.onend = null;
-    try {
-      input.abort();
-    } catch {
-    }
+  function show(next, message) {
+    phase = next;
+    listen.textContent = next === "recording" ? "Send command" : "\u{1F399}\uFE0F Listen";
+    listen.disabled = !source || next !== "idle" && next !== "recording" || !supportedFormat();
+    cancel.hidden = next === "idle" || next === "applying";
+    status.toggleAttribute("data-listening", next === "recording");
+    if (message) status.textContent = message;
+  }
+  function stopTracks() {
+    microphone?.getTracks().forEach((track) => track.stop());
+    microphone = void 0;
   }
   function end(message) {
-    releaseMicrophone();
+    clearTimeout(timer);
     request?.abort();
     request = void 0;
-    applying = false;
-    if (message) status.textContent = message;
-    controls();
+    if (recorder?.state === "recording") recorder.stop();
+    recorder = void 0;
+    stopTracks();
+    show("idle", message);
   }
   async function refreshSource() {
+    const id = ++refreshId;
     try {
       const reply = await toWorker({ type: "GET_STATUS" });
+      if (id !== refreshId) return;
       const next = reply.ok && reply.status.phase === "capturing" ? reply.status.session.id : void 0;
+      const initial = source === void 0;
       if (source !== next && request) end("The playing tab changed. Try again.");
       source = next;
-      if (!request && (!transcript.textContent || !source)) {
-        status.textContent = !getRecognizer() ? "Speech recognition is unavailable in this browser." : source ? "Click Listen, then speak your audio command." : "Select a playing tab with the MoodShift icon first.";
-      }
+      const message = !supportedFormat() ? "Microphone recording is unavailable in this browser." : !source ? "Select a playing tab with the MoodShift icon first." : initial ? "Click Listen, then speak your command." : void 0;
+      show(phase, phase === "idle" ? message : void 0);
     } catch {
-      if (!request) status.textContent = "Couldn\u2019t connect to MoodShift. Try reopening voice commands.";
+      if (id === refreshId && !request) show("idle", "Couldn\u2019t connect to MoodShift. Try reopening voice commands.");
     }
-    controls();
   }
-  async function submit(text, current, sessionId) {
-    transcript.textContent = text;
-    transcript.hidden = false;
-    status.textContent = "Interpreting\u2026";
-    controls();
+  function base64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(",")[1]);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  }
+  async function submit(clip, mimeType, current, sessionId) {
     try {
-      const result = await runNaturalCommand(text, { sessionId, signal: current.signal, applying: () => {
-        applying = true;
-        status.textContent = "Applying\u2026";
-        controls();
-      } });
-      if (request === current) end(result.message);
+      if (!clip.size) {
+        end("No audio was recorded. Try speaking again.");
+        return;
+      }
+      const data = await base64(clip);
+      current.signal.throwIfAborted();
+      const result = await runNaturalCommand({ mimeType, data }, {
+        sessionId,
+        signal: current.signal,
+        applying: () => show("applying", "Applying\u2026")
+      });
+      if (request === current) {
+        transcript.textContent = result.transcript ?? "";
+        transcript.hidden = !result.transcript;
+        end(result.message);
+      }
     } catch (error) {
-      if (request === current) end(error instanceof CommandFeedbackError ? error.message : "Couldn\u2019t apply that command. Try again.");
+      if (request === current) end(error instanceof CommandFeedbackError ? error.message : "Couldn\u2019t apply that voice command. Try again.");
     }
   }
-  listen.addEventListener("click", () => {
-    const Speech = getRecognizer();
-    if (!Speech || !source || request || document.hidden) return;
-    const sessionId = source;
+  function sendRecording() {
+    if (recorder?.state !== "recording") return;
+    clearTimeout(timer);
+    show("sending", "Interpreting\u2026");
+    recorder.stop();
+  }
+  async function startRecording(sessionId, mimeType) {
     const current = request = new AbortController();
     transcript.textContent = "";
     transcript.hidden = true;
-    status.textContent = "Starting microphone\u2026";
-    controls();
+    show("permission", "Waiting for microphone access\u2026");
     try {
-      const input = recognizer = new Speech();
-      input.continuous = false;
-      input.interimResults = false;
-      input.lang = navigator.language;
-      input.onstart = () => {
-        if (document.hidden || request !== current) {
-          end("Listening cancelled.");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      if (request !== current || document.hidden) {
+        stream.getTracks().forEach((track) => track.stop());
+        if (request === current) end("Voice command cancelled.");
+        return;
+      }
+      microphone = stream;
+      const input = recorder = new MediaRecorder(stream, { mimeType: `${mimeType};codecs=opus`, audioBitsPerSecond: 32e3 });
+      const chunks = [];
+      let bytes = 0;
+      input.ondataavailable = ({ data }) => {
+        if (request !== current) return;
+        bytes += data.size;
+        if (bytes > voiceMaxBytes) end("The recording is too large. Try a shorter command.");
+        else if (data.size) chunks.push(data);
+      };
+      input.onerror = () => {
+        if (request === current) end("Recording failed. Check your microphone and try again.");
+      };
+      input.onstop = () => {
+        if (request !== current) return;
+        if (phase !== "sending") {
+          end("The microphone stopped. Try recording again.");
           return;
         }
-        speaking = true;
-        status.textContent = "\u{1F399}\uFE0F Listening\u2026";
-        controls();
+        recorder = void 0;
+        stopTracks();
+        void submit(new Blob(chunks, { type: mimeType }), mimeType, current, sessionId);
       };
-      input.onspeechend = () => input.stop();
-      input.onresult = (event) => {
-        if (recognizer !== input || request !== current) return;
-        const result = event.results[event.resultIndex];
-        if (!result?.isFinal) return;
-        const text = result[0]?.transcript.trim() ?? "";
-        releaseMicrophone();
-        if (!text || text.length > 500) {
-          end("Try again with a short audio command.");
-          return;
-        }
-        void submit(text, current, sessionId);
-      };
-      input.onend = () => {
-        if (recognizer === input) end("I didn\u2019t catch that. Try speaking again.");
-      };
-      input.onerror = (event) => {
-        if (recognizer === input) end(speechErrors[event.error] ?? "Couldn\u2019t recognize speech. Try again.");
-      };
-      timer = setTimeout(() => end("Listening ended. Try speaking again."), 15e3);
-      input.start();
-    } catch {
-      end("Couldn\u2019t start the microphone. Check your Chrome permissions.");
+      input.start(250);
+      timer = setTimeout(sendRecording, voiceMaxSeconds * 1e3);
+      show("recording", "\u{1F399}\uFE0F Listening\u2026");
+    } catch (error) {
+      if (request !== current) return;
+      end(error instanceof DOMException && error.name === "NotAllowedError" ? "Microphone access was blocked. Allow it for this extension in your browser and try again." : error instanceof DOMException && error.name === "NotFoundError" ? "Connect a microphone and try again." : "Couldn\u2019t start recording. Check your browser and system microphone settings.");
     }
+  }
+  listen.addEventListener("click", () => {
+    if (phase === "recording") {
+      sendRecording();
+      return;
+    }
+    const format = supportedFormat();
+    if (format && source && !request && !document.hidden) void startRecording(source, format);
   });
   cancel.addEventListener("click", () => end("Voice command cancelled."));
-  document.querySelector("#voice-close").addEventListener("click", () => {
+  async function closeTab() {
     end();
-    window.close();
+    const tab = await chrome.tabs.getCurrent();
+    if (tab?.id !== void 0) await chrome.tabs.remove(tab.id);
+    else window.close();
+  }
+  document.querySelector("#voice-close").addEventListener("click", () => {
+    void closeTab();
   });
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (request) end("Voice command cancelled.");
-      else window.close();
+      else void closeTab();
     }
   });
-  window.addEventListener("blur", () => {
-    if (speaking) end("Listening cancelled.");
-  });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden && request && !applying) end("Voice command cancelled.");
+    if (document.hidden && phase === "recording") end("Voice command cancelled.");
+  });
+  window.addEventListener("blur", () => {
+    if (phase === "recording") end("Voice command cancelled.");
   });
   window.addEventListener("pagehide", () => end());
   chrome.runtime.onMessage.addListener((message) => {

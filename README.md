@@ -34,12 +34,12 @@ Slowed + Reverb uses 85% of the previous playback speed on supported YouTube wat
 ## Text and voice commands
 
 1. Start music, then click MoodShift on the playing tab. Type a request such as “Lower pitch by two semitones and add Concert Hall reverb.” Gemini can also adjust EQ bands or exact frequencies, bypass effects, switch mixes, apply presets, and update Home and lyrics display preferences. “Reset the whole audio mix” returns the audio controls to defaults.
-2. Press **Ctrl+Shift+Y** on Windows or macOS to open the compact voice window, or click the microphone button beside **Apply**. In Chrome, open `chrome://extensions/shortcuts` to change the binding or assign one if Chrome reports a conflict.
-3. Click **Listen**, allow the microphone if Chrome prompts, and say one command. The window shows the transcript and confirms the result after MoodShift applies it. Use **Cancel** or Escape while listening or interpreting. Closing the window leaves tab playback running.
+2. Click the microphone beside **Apply** or press **Ctrl+Shift+Y** to open the voice command tab. Change or assign the shortcut on your browser's extension shortcuts page. In Chrome, open `chrome://extensions/shortcuts`.
+3. Click **Listen**, grant microphone access if asked, and say one command. Click **Send command** when finished, or wait for the eight-second recording limit. The tab shows the transcript and the result. Use **Cancel** or Escape while recording or waiting for Gemini. Closing the tab leaves music playback running.
 
-Voice uses Chrome’s Web Speech API with the default microphone and browser language. Chrome may process the microphone audio using its speech service. MoodShift passes the recognized text to the same Gemini endpoint as a typed command. Each request includes the current settings, coarse signal metrics, and available preset names. Saved sound preferences are included only when opted in. [Chrome Commands API](https://developer.chrome.com/docs/extensions/reference/api/commands) · [Web Speech API](https://webaudio.github.io/web-speech-api/)
+The voice tab uses the browser's standard microphone permission and recording APIs. If access was previously denied, check the browser and operating-system microphone settings. Gemini receives the short recording via your configured MoodShift backend and uses it to transcribe and interpret the command. Voice and text commands include the current settings, coarse signal metrics, and available preset names. Typed commands can also include opted-in sound preferences. [Gemini audio input](https://ai.google.dev/gemini-api/docs/audio)
 
-The latest local proxy supports the full command registry. A cloud installation needs the matching `/api/interpret/v2` backend for the new controls. Older backends still support their original DSP and stem prompt contract. [Vercel upgrade steps](docs/DEPLOY_VERCEL.md#upgrade-an-existing-api-to-command-version-2)
+The current proxy supports both `/api/interpret/v2` for text and `/api/interpret/voice` for recordings. For a cloud install, confirm that `/health` returns `X-MoodShift-Controls: 2` and `X-MoodShift-Voice: 1`. Older backends support their original DSP and stem prompts. [Vercel upgrade steps](docs/DEPLOY_VERCEL.md#upgrade-an-existing-api-to-command-version-2)
 
 ## Synchronized lyrics
 
@@ -127,7 +127,7 @@ Run the Python transport tests with `& $python -m unittest discover -s tests -p 
 | Capture failed or output is paused | Start playback, click MoodShift on a normal audio-playing tab, and check Chrome's extension access and any organization restrictions on tab sharing. |
 | Meter stays at zero | Check that the source is playing, the video player and tab are unmuted, and the panel shows the intended title. Protected playback can produce silence. |
 | Meter moves but output is quiet | Check the Chrome or system output device and volume. Switch to Original and check Output gain. |
-| Gemini unavailable | Check `/health`. Start the proxy, confirm `GEMINI_API_KEY` and `GEMINI_MODEL` in `server/.env`, and restart the proxy after changes. If you hit a quota, check your project’s rate limits and try again later. Presets and manual controls remain available. [Google AI Studio rate limits](https://aistudio.google.com/rate-limit) |
+| Gemini unavailable | Read the detailed message in MoodShift. For local use, run `npm run dev:server` and check `server/.env` for `GEMINI_API_KEY`. For cloud use, check that `API_BASE_URL` reaches the deployed API and that `/health` includes the current version headers. If the configured model stays busy, set `GEMINI_MODEL=gemini-3.5-flash-lite` in the backend environment and restart or redeploy it. If you hit a quota, check your project’s rate limits. [Gemini 3.5 Flash-Lite](https://aistudio.google.com/docs/models/gemini-3.5-flash-lite) · [Google AI Studio rate limits](https://aistudio.google.com/rate-limit) |
 | The wrong tab is playing | The toolbar selects the tab where you click it. Switching tabs alone leaves the original source running in the background. |
 | Source went away | If Chrome ends capture on navigation or tab closure, start playback in the desired tab and click MoodShift again. |
 | Rebuild does not show up | After rebuilding, click **Reload** on MoodShift at `chrome://extensions`, then reselect the source with the toolbar icon. Reload can end a capture. |
@@ -164,7 +164,7 @@ Set `MOODSHIFT_CHORDS_TEST=1` to exercise the live Songle timeline, `MOODSHIFT_P
 
 Set `$env:MOODSHIFT_TUNING_TEST='1'` before running `node tests/chrome-smoke.mjs` to measure stereo pitch and EQ response in Chrome, exercise Domain Expansion during capture, and verify persistence after browser restart. `$env:MOODSHIFT_TUNING_SOAK='120'` adds two minutes of playback with the panel closed. To also check routing through the stem buffer with the test PCM worker, set `$env:MOODSHIFT_REVERB_STEMS='1'` and `$env:MOODSHIFT_STEM_TEST_PORT='9191'` with the Python dependencies from the optional stem setup installed.
 
-Set `$env:MOODSHIFT_COMMAND_TEST='1'` for Chrome's non-YouTube player, command dispatcher, and simulated voice recognition checks. Add `$env:MOODSHIFT_LIVE_COMMAND_TEST='1'` to use a running local Gemini proxy for one command. The proxy must allow the disposable extension origin if a local origin allowlist is configured.
+Set `$env:MOODSHIFT_COMMAND_TEST='1'` for the fixture player, command dispatcher, and microphone tests with Chromium's fake input device. Set `MOODSHIFT_CHROME_PATH` to the browser executable to repeat the check in another Chromium browser. Add `$env:MOODSHIFT_LIVE_COMMAND_TEST='1'` to use a running local Gemini proxy for one typed command. The proxy must allow the disposable extension origin if a local origin allowlist is configured.
 
 ## Private cloud demo
 

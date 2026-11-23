@@ -1,7 +1,7 @@
 import express, { type ErrorRequestHandler, type RequestHandler } from 'express';
 import type { ZodType } from 'zod';
-import { interpret, interpretControls, ProxyError, type ModelConfig } from './interpret.js';
-import { controlRequestSchema, requestSchema } from './schema.js';
+import { interpret, interpretControls, interpretVoice, ProxyError, type ModelConfig } from './interpret.js';
+import { controlRequestSchema, requestSchema, voiceRequestSchema } from './schema.js';
 import { demoGuard, extensionOrigin, type AccessPolicy } from './access.js';
 
 export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch,
@@ -13,13 +13,14 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch,
     res.vary('Origin');
     const origin = req.get('Origin');
     if (origin !== undefined && (!extensionOrigin.test(origin) || (policy.origins && !policy.origins.has(origin)))) {
-      res.status(403).json({ error: 'This browser origin is not allowed.' });
+      res.status(403).json({ error: 'This browser origin is not allowed.', code: 'origin_denied' });
       return;
     }
     if (origin) {
       res.set('Access-Control-Allow-Origin', origin);
       res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.set('Access-Control-Allow-Headers', policy.mode === 'local' ? 'Content-Type' : 'Content-Type, Authorization');
+      res.set('Access-Control-Expose-Headers', 'X-MoodShift-Controls, X-MoodShift-Voice');
     }
     if (req.method === 'OPTIONS') {
       res.sendStatus(origin ? 204 : 403);
@@ -30,6 +31,7 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch,
 
   app.get('/health', (_req, res) => {
     res.set('X-MoodShift-Controls', '2');
+    res.set('X-MoodShift-Voice', '1');
     res.json({ ok: true, aiConfigured: Boolean(config.apiKey), model: config.model });
   });
   if (policy.mode !== 'local') app.use('/api', demoGuard(policy.token));
@@ -43,11 +45,11 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch,
     }
     const request = schema.safeParse(req.body);
     if (!request.success) {
-      res.status(400).json({ error: 'Provide a 1–500 character prompt, all effect values, and bounded audio features.' });
+      res.status(400).json({ error: 'Provide a valid command and current audio settings.', code: 'invalid_command' });
       return;
     }
     if (policy.mode !== 'local' && !config.apiKey) {
-      res.status(503).json({ error: 'Gemini is not configured on this cloud backend.' });
+      res.status(503).json({ error: 'Gemini is not configured on this cloud backend.', code: 'gemini_not_configured' });
       return;
     }
     const controller = new AbortController();
@@ -61,12 +63,13 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch,
       if (!controller.signal.aborted) res.json(result);
     } catch (error) {
       if (controller.signal.aborted) return;
-      if (error instanceof ProxyError) res.status(error.status).json({ error: error.message });
+      if (error instanceof ProxyError) res.status(error.status).json({ error: error.message, code: error.code });
       else res.status(500).json({ error: 'The MoodShift proxy could not interpret the request.' });
     }
   };
   app.post('/api/interpret', express.json({ limit: '8kb', inflate: false }), handleInterpretation(requestSchema, interpret));
   app.post('/api/interpret/v2', express.json({ limit: '12kb', inflate: false }), handleInterpretation(controlRequestSchema, interpretControls));
+  app.post('/api/interpret/voice', express.json({ limit: '144kb', inflate: false }), handleInterpretation(voiceRequestSchema, interpretVoice));
 
   const inputErrors: ErrorRequestHandler = (error, _req, res, _next) => {
     const status = error.status === 413 ? 413 : error.status === 415 ? 415 : 400;

@@ -2451,12 +2451,57 @@
       redirect: "error"
     });
   }
-  function apiErrorDetail(response) {
-    console.warn("MoodShift online processing returned an error", response.status);
-    if (response.status === 401 || response.status === 403) return cloudAccessMessage;
+  var apiErrors = {
+    origin_denied: "This browser\u2019s extension ID is missing from the backend\u2019s allowed origins.",
+    gemini_not_configured: "The backend is missing GEMINI_API_KEY. Set it and restart or redeploy the backend.",
+    gemini_access: "Google rejected the Gemini key or model. Check key access and GEMINI_MODEL on the backend.",
+    gemini_quota: "Gemini quota reached. Check the Google AI Studio project limits and try again later.",
+    gemini_busy: "The configured Gemini model is temporarily busy. Try again shortly.",
+    gemini_request: "Google rejected the request. Check that GEMINI_MODEL supports structured output and audio for voice commands.",
+    gemini_network: "The backend could not reach Gemini. Try again shortly.",
+    gemini_timeout: "Gemini timed out. Try again.",
+    gemini_response: "Gemini returned an unusable response. Try a shorter command.",
+    gemini_upstream: "Gemini returned a temporary service error. Try again shortly."
+  };
+  var olderBackendMessage = "Pitch and other newer commands need an updated MoodShift backend. Redeploy the API from the current branch.";
+  async function apiErrorDetail(response, config = deployment) {
+    const json = response.headers.get("Content-Type")?.includes("application/json");
+    if (json) {
+      const payload = await response.json().catch(() => null);
+      if (typeof payload?.code === "string" && Object.hasOwn(apiErrors, payload.code)) return apiErrors[payload.code];
+    }
+    if ((response.status === 401 || response.status === 403) && !json && config.mode === "production") {
+      return "The API returned a sign-in or access page. Use the Vercel domain where /health opens without a login.";
+    }
+    if (response.status === 401) return cloudAccessMessage;
+    if (response.status === 403) return apiErrors.origin_denied;
     if (response.status === 429) return "Too many requests right now. Try again in a moment.";
+    if (response.status === 504) return apiErrors.gemini_timeout;
+    if (response.status === 413) return "The recording is too large. Try a shorter command.";
+    if (response.status === 503 && !json) return "The API could not start. Check the Vercel deployment logs and environment variables.";
     if (response.status >= 500) return "Online processing is unavailable right now. Try again shortly.";
     return "Couldn\u2019t apply that request. Try describing the sound again.";
+  }
+  async function apiConnectionDetail(signal, config = deployment) {
+    try {
+      const response = await fetch(new URL("/health", config.apiBaseUrl).href, {
+        credentials: "omit",
+        redirect: "manual",
+        signal: AbortSignal.any([signal, AbortSignal.timeout(3e3)])
+      });
+      if (config.mode === "production" && (response.type === "opaqueredirect" || response.status === 401 || response.status === 403)) {
+        return "The API requires a browser login. Use the Vercel domain where /health opens without a login.";
+      }
+      if (response.ok) {
+        const health = await response.json();
+        if (health.aiConfigured === false) return apiErrors.gemini_not_configured;
+        if (health.ok === true && !response.headers.has("X-MoodShift-Controls")) return olderBackendMessage;
+        return "The backend responds, but the command request failed. Check the extension origin allowlist and try again.";
+      }
+    } catch {
+      signal.throwIfAborted();
+    }
+    return config.mode === "development" ? "Gemini unavailable. Start the local MoodShift proxy with npm run dev:server." : "Gemini unavailable. Check the configured API URL and open /health on that domain.";
   }
 
   // extension/src/shared/controls.ts
@@ -2721,9 +2766,10 @@
     if (result.stemMode) actions.push({ control: "mix", operation: "set", value: result.stemMode });
     return { actions, summary: result.summary, unsupported: result.unsupported };
   }
-  async function runNaturalCommand(text, options) {
-    const prompt = text.trim();
-    if (!prompt || prompt.length > 500) throw new CommandFeedbackError("Try a short audio command of up to 500 characters.");
+  async function runNaturalCommand(input, options) {
+    const audio = typeof input === "string" ? void 0 : input;
+    const prompt = typeof input === "string" ? input.trim() : "";
+    if (!audio && (!prompt || prompt.length > 500)) throw new CommandFeedbackError("Try a short audio command of up to 500 characters.");
     options.signal.throwIfAborted();
     const reply = await toWorker({ type: "GET_STATUS" });
     if (!reply.ok || reply.status.phase !== "capturing" || options.sessionId && reply.status.session.id !== options.sessionId) {
@@ -2739,13 +2785,14 @@
     const [display, saved, localPreferences] = await Promise.all([
       loadDisplay(),
       loadControlPresets(),
-      promptPreferences(prompt).catch(() => void 0)
+      audio ? void 0 : promptPreferences(prompt).catch(() => void 0)
     ]);
     options.signal.throwIfAborted();
     const { session, effects, revision, features, outputPaused } = capture;
     const direct = directStemIntent(prompt);
     let result;
     let legacy = false;
+    let transcript;
     if (direct === "unsupported") return { message: "Unsupported \xB7 Beat, drum and bass isolation require separate stems." };
     if (direct) {
       result = {
@@ -2754,38 +2801,43 @@
         unsupported: []
       };
     } else {
-      const request = { prompt, currentEffects: effects, audioFeatures: session.muted || outputPaused ? silentFeatures : features, localPreferences };
+      const request = { currentEffects: effects, audioFeatures: session.muted || outputPaused ? silentFeatures : features, localPreferences };
       const { effects: _effects, ...settings } = controlState(capture, display);
       const names = (rows) => rows.map((row) => row.name).filter((name) => !/[\u0000-\u001f\u007f]/.test(name)).slice(0, controlPresetLimit);
       const deadline = AbortSignal.timeout(15e3);
       const signal = AbortSignal.any([options.signal, deadline]);
       try {
-        let response = await apiRequest("/api/interpret/v2", { ...request, controls: {
+        const command2 = { ...request, controls: {
           ...settings,
           savedAudio: names(saved.audio),
           savedEq: names(saved.eq),
           youtubeWatch: session.platform === "youtube"
-        } }, signal);
+        } };
+        let response = audio ? await apiRequest("/api/interpret/voice", { ...command2, audio }, signal) : await apiRequest("/api/interpret/v2", { ...command2, prompt }, signal);
         if (response.status === 404) {
+          if (audio) throw new CommandFeedbackError("Voice commands need the updated MoodShift API. Redeploy the backend or start the updated local proxy.");
           legacy = true;
           await response.body?.cancel();
-          response = await apiRequest("/api/interpret", request, signal);
+          response = await apiRequest("/api/interpret", { ...request, prompt }, signal);
         }
-        if (response.status === 504) throw new CommandFeedbackError("Gemini timed out. Try again.");
-        if (response.status >= 500) throw new CommandFeedbackError("Gemini unavailable. Presets and manual controls still work.");
-        if (!response.ok) throw new CommandFeedbackError(apiErrorDetail(response));
+        if (!response.ok) throw new CommandFeedbackError(await apiErrorDetail(response));
         const body = await response.json();
-        result = legacy ? legacyResult(body, effects) : parseControlResult(body);
+        if (audio) {
+          const { transcript: spoken, ...plan } = body;
+          result = parseControlResult(plan);
+          if (typeof spoken !== "string" || spoken.length > 500 || !spoken.trim() && result.actions.length) throw new Error("Invalid transcript.");
+          transcript = spoken.trim();
+        } else result = legacy ? legacyResult(body, effects) : parseControlResult(body);
       } catch (error) {
         options.signal.throwIfAborted();
         if (deadline.aborted) throw new CommandFeedbackError("Gemini timed out. Try again.");
-        if (error instanceof TypeError) throw new CommandFeedbackError("Gemini unavailable. Presets and manual controls still work.");
+        if (error instanceof TypeError) throw new CommandFeedbackError(await apiConnectionDetail(options.signal));
         if (error instanceof CloudAccessError) throw new CommandFeedbackError(error.message);
         throw error;
       }
     }
-    const limitation = result.unsupported.length ? ` Unsupported \xB7 ${result.unsupported.join(", ")}` : "";
-    if (!result.actions.length) return { message: `${result.summary}${limitation}${legacy && limitation ? " The configured backend uses the older command API." : ""}` };
+    const limitation = result.unsupported.length ? ` Unsupported \xB7 ${result.unsupported.join(", ")}${legacy ? ` ${olderBackendMessage}` : ""}` : "";
+    if (!result.actions.length) return { message: result.summary + limitation, transcript };
     options.signal.throwIfAborted();
     options.applying?.();
     const changed = await toWorker({
@@ -2803,7 +2855,7 @@
     }
     const notices = changed.notices ?? [];
     const message = notices.length ? `${changed.applied ? "Settings updated. " : ""}${notices.join(" ")}` : changed.applied ? `Applied \u2713 \xB7 ${confirmation}` : `Already set. ${confirmation}`;
-    return { message: message + limitation, status: changed.status };
+    return { message: message + limitation, status: changed.status, transcript };
   }
 
   // extension/src/sidepanel.ts

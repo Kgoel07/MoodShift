@@ -24,12 +24,15 @@ let openingVoice: Promise<void> | undefined;
 
 function openVoice(): Promise<void> {
   openingVoice ??= (async () => {
-    const [window] = await chrome.runtime.getContexts({ documentUrls: [voiceUrl] });
-    if (window && window.windowId >= 0) {
-      try { await chrome.windows.update(window.windowId, { focused: true }); return; }
-      catch { /* The previous window closed after the lookup. */ }
+    const [page] = await chrome.runtime.getContexts({ documentUrls: [voiceUrl] });
+    if (page && page.tabId >= 0) {
+      try {
+        await chrome.tabs.update(page.tabId, { active: true });
+        await chrome.windows.update(page.windowId, { focused: true });
+        return;
+      } catch { /* The previous tab closed after the lookup. */ }
     }
-    await chrome.windows.create({ url: voiceUrl, type: 'popup', width: 370, height: 335, focused: true });
+    await chrome.tabs.create({ url: voiceUrl });
   })().finally(() => { openingVoice = undefined; });
   return openingVoice;
 }

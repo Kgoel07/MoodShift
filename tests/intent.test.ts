@@ -45,6 +45,18 @@ describe('Gemini HTTP adapter', () => {
       .rejects.toMatchObject({ status: status === 429 ? 429 : status === 500 ? 502 : 503 });
   });
 
+  it('retries a busy model once within the same deadline', async () => {
+    const busy = () => new Response(null, { status: 503 });
+    const upstream = vi.fn<typeof fetch>(async () => busy());
+    upstream.mockResolvedValueOnce(busy()).mockResolvedValueOnce(completion(relative));
+    await expect(interpret(request, config, upstream)).resolves.toEqual(relative);
+    expect(upstream).toHaveBeenCalledTimes(2);
+    expect(upstream.mock.calls[0][1]?.signal).toBe(upstream.mock.calls[1][1]?.signal);
+    upstream.mockClear();
+    await expect(interpret(request, config, upstream)).rejects.toMatchObject({ status: 503, code: 'gemini_busy' });
+    expect(upstream).toHaveBeenCalledTimes(2);
+  });
+
   it('handles invalid envelopes and syntax as upstream failures', async () => {
     await expect(interpret(request, config, async () => new Response('<html>')))
       .rejects.toMatchObject({ status: 502 });
