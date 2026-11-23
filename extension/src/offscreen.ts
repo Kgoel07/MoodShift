@@ -1,6 +1,9 @@
 import { AudioEngine } from './audio-engine';
 import { AudioFeaturesMeter } from './audio-features';
 import { StemStream } from './stem-stream';
+import { EqSpectrum } from './eq-spectrum';
+import { deployment } from './shared/deployment';
+import { changeTuning, readTuning, validateTuning, type TuningSettings } from './shared/tuning';
 import { applyPatch, neutralEffects, type AudioEffectState } from './shared/effects';
 import { changeReverb, defaultReverb, validateReverb, type ReverbSettings, type ReverbSpeed, type ReverbState } from './shared/reverb';
 import { meterChannel, statusChanged, type AudioMessage, type MeterUpdate, type Reply } from './shared/messages';
@@ -20,6 +23,7 @@ interface LiveCapture {
   stemStream?: StemStream;
   stemRequest: number;
   reverb: ReverbState;
+  tuning: TuningSettings;
   speedOwner?: string;
   speedTimer?: ReturnType<typeof setInterval>;
 }
@@ -28,11 +32,16 @@ let live: LiveCapture | undefined;
 let problem: string | undefined;
 let pending: Promise<void> = Promise.resolve();
 const meterUpdates = new BroadcastChannel(meterChannel);
+const spectrum = new EqSpectrum(() => Boolean(live && !live.session.muted && live.context.state === 'running'));
 
 function read(): CaptureStatus {
   if (live) {
-    const { session, effects, revision, monitor, features, context, stem, reverb } = live;
-    return { phase: 'capturing', session, effects, revision, monitor, features, stem, reverb, outputPaused: context.state !== 'running' };
+    const { session, effects, revision, monitor, features, context, stem, reverb, tuning, engine } = live;
+    const pitch = engine?.pitchPlayback ?? { phase: 'bypass', latencySeconds: 0 } as const;
+    const stemSeconds = stem.phase === 'active' && monitor === 'modified' ? deployment.stemDelaySeconds : 0;
+    const audioTiming = { sampleRate: context.sampleRate, pitch, stemSeconds, processingSeconds: stemSeconds + pitch.latencySeconds };
+    return { phase: 'capturing', session, effects, revision, monitor, features, stem, reverb, tuning, audioTiming,
+      outputPaused: context.state !== 'running' };
   }
   return problem ? { phase: 'error', message: problem } : { phase: 'ready' };
 }
@@ -42,6 +51,7 @@ async function stop(sessionId: string, error?: string): Promise<void> {
   const { engine, stream, context, timer, stemStream } = live;
   const capture = live;
   live = undefined;
+  spectrum.setSource(undefined);
   const restoring = releaseSpeed(capture);
   if (error) console.warn('MoodShift capture ended', error);
   problem = error ? 'Audio stopped. Play the song and click MoodShift to reconnect.' : undefined;
@@ -110,7 +120,7 @@ function end(sessionId: string, error?: string): void {
   }).catch(console.error);
 }
 
-async function start(session: CaptureSession, streamId: string): Promise<void> {
+async function start(session: CaptureSession, streamId: string, tuning: TuningSettings): Promise<void> {
   if (live?.session.id === session.id) return;
   if (live) throw new Error('Stop the current source before switching tabs.');
   problem = undefined;
@@ -142,9 +152,10 @@ async function start(session: CaptureSession, streamId: string): Promise<void> {
       session, stream, context, effects: { ...neutralEffects }, monitor: 'modified',
       revision: 0, features: silentFeatures, stem: { phase: 'idle', mode: 'full' }, stemRequest: 0,
       reverb: { ...defaultReverb, speed: { state: 'idle' } },
+      tuning,
     };
     live = capture;
-    live.engine = new AudioEngine(context, stream);
+    live.engine = new AudioEngine(context, stream, () => { if (live === capture) statusChanged(); });
     if (session.muted) live.engine.setMuted(true);
     if (context.state !== 'running') {
       await Promise.race([
@@ -156,6 +167,8 @@ async function start(session: CaptureSession, streamId: string): Promise<void> {
       throw new Error('Chrome paused audio output. Play the source and click MoodShift on that tab to retry.');
     }
     if (track.readyState !== 'live') throw new Error('Capture ended during startup. Click MoodShift to retry.');
+    capture.engine!.setTuning(tuning);
+    spectrum.setSource(capture.engine!.equalizerOutput);
     track.addEventListener('ended', () => end(session.id), { once: true });
     context.addEventListener('statechange', () => {
       if (live !== capture) return;
@@ -268,14 +281,20 @@ chrome.runtime.onMessage.addListener((message: AudioMessage, _sender, sendRespon
     return true;
   }
   void queue(async (): Promise<Reply> => {
-    if (message.type === 'START') await start(message.session, message.streamId);
+    if (message.type === 'START') await start(message.session, message.streamId, readTuning(message.tuning));
     if (message.type === 'STOP') await stop(message.sessionId);
-    if (message.type === 'APPLY_EFFECTS' || message.type === 'SET_MONITOR' || message.type === 'UPDATE_TAB' || message.type === 'SET_REVERB') {
+    if (message.type === 'APPLY_EFFECTS' || message.type === 'SET_MONITOR' || message.type === 'UPDATE_TAB'
+      || message.type === 'SET_REVERB' || message.type === 'SET_TUNING') {
       const capture = live;
       if (!capture?.engine || capture.session.id !== message.sessionId) {
         return { ok: false, message: 'The selected tab changed. Try again on the current source.' };
       }
-      if (message.type === 'SET_REVERB') {
+      if (message.type === 'SET_TUNING') {
+        const tuning = changeTuning(capture.tuning, message.edit);
+        capture.tuning = tuning;
+        capture.revision++;
+        capture.engine.setTuning(tuning);
+      } else if (message.type === 'SET_REVERB') {
         const { preset, duration, lastAmount } = capture.reverb;
         const next = changeReverb({ preset, duration, lastAmount }, capture.effects.reverbMix, message.patch);
         await applyReverb(capture, next.settings, applyPatch(capture.effects, { reverbMix: next.mix }), message.patch.preset !== undefined || message.patch.enabled === true);
@@ -285,7 +304,12 @@ chrome.runtime.onMessage.addListener((message: AudioMessage, _sender, sendRespon
         }
         const next = applyPatch(capture.effects, message.patch);
         const { preset, duration, lastAmount } = capture.reverb;
-        await applyReverb(capture, message.reverb ? validateReverb(message.reverb) : { preset, duration, lastAmount }, next, message.reverb !== undefined);
+        const settings = message.reverb ? validateReverb(message.reverb) : { preset, duration, lastAmount };
+        if (message.tuning) {
+          capture.tuning = validateTuning(message.tuning);
+          capture.engine.setTuning(capture.tuning);
+        }
+        await applyReverb(capture, settings, next, message.reverb !== undefined);
       } else if (message.type === 'SET_MONITOR') {
         if (message.baseRevision !== undefined && message.baseRevision !== capture.revision) {
           return { ok: false, message: 'Effects changed before switching the monitor.' };

@@ -7,6 +7,7 @@
   "icons": { "16": "assets/icon-16.png", "32": "assets/icon-32.png", "48": "assets/icon-48.png", "128": "assets/icon-128.png" },
   "permissions": ["activeTab", "tabCapture", "offscreen", "sidePanel", "storage"],
   "host_permissions": ["http://127.0.0.1/*", "https://lrclib.net/*", "https://widget.songle.jp/*"],
+  "content_security_policy": { "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';" },
   "content_scripts": [
     { "matches": ["https://www.youtube.com/*"], "js": ["youtube-playback.js"], "run_at": "document_start" }
   ],

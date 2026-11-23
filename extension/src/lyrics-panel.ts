@@ -31,6 +31,8 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
   let lines: LyricLine[] = [];
   let lineElements: HTMLParagraphElement[] = [];
   let active = -1;
+  let pitchDelay = 0;
+  const displayOffset = () => formatOffset(offset.valueAsNumber) + pitchDelay;
 
   function refreshControls(): void {
     form.hidden = session.playback === null;
@@ -58,9 +60,9 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
 
   function highlight(): void {
     const playback = session.playback;
-    onPlayback(playback, formatOffset(offset.valueAsNumber));
+    onPlayback(playback, displayOffset());
     if (!playback || !lines.length) return;
-    const index = activeLyric(lines, playback, formatOffset(offset.valueAsNumber));
+    const index = activeLyric(lines, playback, displayOffset());
     if (index === active) return;
     lineElements[active]?.removeAttribute('aria-current');
     active = index;
@@ -137,7 +139,7 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
     const previousVideo = session.playback?.videoId;
     const outcome = session.receive(id, update);
     if (outcome === 'ignored') return;
-    if (outcome === 'changed') onPlayback(update, formatOffset(offset.valueAsNumber));
+    if (outcome === 'changed') onPlayback(update, displayOffset());
     if (outcome === 'playback' && update) {
       highlight();
       return;
@@ -262,6 +264,11 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
   });
 
   return {
+    setPitchDelay(seconds: number): void {
+      if (pitchDelay === seconds) return;
+      pitchDelay = seconds;
+      highlight();
+    },
     setSource(next?: CaptureSession): void {
       if (next?.id === source?.id && next?.platform === source?.platform) return;
       const old = connection;
@@ -269,7 +276,7 @@ export function mountLyrics(root: HTMLElement, onPlayback: (playback: YouTubePla
       old?.disconnect();
       source = next;
       session.setSource(next?.id);
-      onPlayback(null, formatOffset(offset.valueAsNumber));
+      onPlayback(null, displayOffset());
       clearTimeout(searchTimer);
       clearLyrics();
       title.value = '';

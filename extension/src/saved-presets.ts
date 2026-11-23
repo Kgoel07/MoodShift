@@ -2,6 +2,7 @@ import { clampEffects, effectKeys, type AudioEffectState } from './shared/effect
 import { toWorker } from './shared/messages';
 import type { CaptureStatus, MonitorMode, StemMode } from './shared/types';
 import { validateReverb, type ReverbSettings } from './shared/reverb';
+import { validateTuning, type TuningSettings } from './shared/tuning';
 
 type Capture = Extract<CaptureStatus, { phase: 'capturing' }>;
 export interface SavedPreset {
@@ -15,6 +16,7 @@ export interface SavedPreset {
   stemMode: StemMode;
   monitor: MonitorMode;
   reverb?: ReverbSettings;
+  tuning?: TuningSettings;
 }
 
 export const savedPresetsKey = 'moodshiftSavedPresets';
@@ -46,6 +48,7 @@ export function validatePreset(value: unknown): SavedPreset {
     ...details(preset.name, preset.description), audioSettings: clampEffects(preset.audioSettings),
     stemMode: preset.stemMode, monitor: preset.monitor,
     ...(preset.reverb === undefined ? {} : { reverb: validateReverb(preset.reverb) }),
+    ...(preset.tuning === undefined ? {} : { tuning: validateTuning(preset.tuning) }),
   };
 }
 
@@ -59,6 +62,7 @@ function snapshot(capture: Capture) {
   }
   const reverb = capture.reverb;
   return { audioSettings: capture.effects, stemMode: capture.stem.mode, monitor: capture.monitor,
+    ...(capture.tuning ? { tuning: capture.tuning } : {}),
     ...(reverb ? { reverb: { preset: reverb.preset, duration: reverb.duration, lastAmount: reverb.lastAmount } } : {}) };
 }
 
@@ -128,8 +132,10 @@ export async function applySavedPreset(input: SavedPreset, capture: Capture, cur
   let status = requireCapture(await send({
     type: 'APPLY_EFFECTS', sessionId, patch: preset.audioSettings, baseRevision: capture.revision,
     ...(preset.reverb ? { reverb: preset.reverb } : {}),
+    ...(preset.tuning ? { tuning: preset.tuning } : {}),
   }));
   const matches = () => effectKeys.every(key => status.effects[key] === preset.audioSettings[key])
+    && (!preset.tuning || JSON.stringify(status.tuning) === JSON.stringify(preset.tuning))
     && (!preset.reverb || (status.reverb && status.reverb.preset === preset.reverb.preset
       && status.reverb.duration === preset.reverb.duration && status.reverb.lastAmount === preset.reverb.lastAmount));
   if (!matches()) throw new Error('Audio settings changed during preset application.');

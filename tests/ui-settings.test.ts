@@ -3,10 +3,11 @@ import { rangeFill, readHomeLayout } from '../extension/src/shared/home-layout';
 import { platformFor, trackTitle, youtubeArtwork } from '../extension/src/shared/track';
 
 describe('Home layout', () => {
-  it('defaults to lyrics and stems and reads saved flags independently', () => {
-    expect(readHomeLayout(undefined)).toEqual({ lyrics: true, stems: true, reverb: false, controls: false, presets: false });
+  it('defaults to lyrics, stems, and equalizer and reads saved flags independently', () => {
+    expect(readHomeLayout(undefined)).toEqual({ lyrics: true, stems: true, reverb: false, controls: false, presets: false, pitch: false, equalizer: true });
     expect(readHomeLayout({ lyrics: false, reverb: true, stems: 'false', extra: true }))
-      .toEqual({ lyrics: false, stems: true, reverb: true, controls: false, presets: false });
+      .toEqual({ lyrics: false, stems: true, reverb: true, controls: false, presets: false, pitch: false, equalizer: true });
+    expect(readHomeLayout({ pitch: true, equalizer: false })).toMatchObject({ pitch: true, equalizer: false });
     expect(readHomeLayout([])).toEqual(readHomeLayout(null));
     expect(readHomeLayout(Object.create({ lyrics: false })).lyrics).toBe(true);
   });

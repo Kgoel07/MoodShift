@@ -1,5 +1,6 @@
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { parse } from 'dotenv';
 import { build } from 'esbuild';
@@ -29,14 +30,12 @@ if (config.mode === 'production') {
     ...manifest.host_permissions.filter(pattern => pattern !== 'http://127.0.0.1/*'),
     config.apiBaseUrl + '/*', wsOrigin + '/*',
   ];
-  manifest.content_security_policy = {
-    extension_pages: `script-src 'self'; object-src 'self'; connect-src 'self' ${config.apiBaseUrl} ${wsOrigin} https://lrclib.net https://widget.songle.jp`,
-  };
+  manifest.content_security_policy.extension_pages += ` connect-src 'self' ${config.apiBaseUrl} ${wsOrigin} https://lrclib.net https://widget.songle.jp`;
 }
 await mkdir(outdir, { recursive: true });
 await mkdir(resolve(outdir, 'assets'), { recursive: true });
 await build({
-  entryPoints: ['background', 'offscreen', 'sidepanel', 'stem-worker', 'stem-worklet', 'youtube-playback']
+  entryPoints: ['background', 'offscreen', 'sidepanel', 'domain', 'stem-worker', 'stem-worklet', 'youtube-playback']
     .map(name => `extension/src/${name}.ts`),
   outdir,
   define: { __MOODSHIFT_DEPLOYMENT__: JSON.stringify(config) },
@@ -46,11 +45,13 @@ await build({
   logLevel: 'info',
 });
 await Promise.all([
+  copyFile(fileURLToPath(import.meta.resolve('signalsmith-stretch')), resolve(outdir, 'pitch-processor.mjs')),
+  copyFile(new URL('../docs/SIGNALSMITH_LICENSE.txt', import.meta.url), resolve(outdir, 'SIGNALSMITH_LICENSE.txt')),
   ...Object.values(manifest.icons).map(path => copyFile(new URL(path, dir), resolve(outdir, path))),
   config.mode === 'production'
     ? writeFile(resolve(outdir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
     : copyFile(new URL('manifest.json', dir), resolve(outdir, 'manifest.json')),
-  ...['offscreen.html', 'sidepanel.html', 'sidepanel.css'].map(name =>
+  ...['offscreen.html', 'sidepanel.html', 'sidepanel.css', 'domain.html', 'tuning.css'].map(name =>
     copyFile(new URL(`src/${name}`, dir), resolve(outdir, name))),
 ]);
 if (config.mode === 'production') console.log(`MoodShift cloud API: ${config.apiBaseUrl}`);

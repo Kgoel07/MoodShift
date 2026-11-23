@@ -1,6 +1,8 @@
 export const homeSections = {
   lyrics: { label: 'Lyrics', visible: true },
   stems: { label: 'Stems', visible: true },
+  equalizer: { label: 'Equalizer', visible: true },
+  pitch: { label: 'Pitch Control', visible: false },
   reverb: { label: 'Reverb', visible: false },
   controls: { label: 'Audio controls', visible: false },
   presets: { label: 'My Presets', visible: false },

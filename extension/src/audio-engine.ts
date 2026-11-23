@@ -2,6 +2,9 @@ import { effectSpecs, neutralEffects, type AudioEffectState } from './shared/eff
 import type { MonitorMode } from './shared/types';
 import { LocalReverb } from './reverb';
 import { defaultReverb, type ReverbSettings } from './shared/reverb';
+import { PitchStage } from './pitch-stage';
+import { EqualizerStage } from './equalizer-stage';
+import type { TuningSettings } from './shared/tuning';
 
 const timeConstant = 0.075; // About 98% of the transition in 300 ms.
 const dbToGain = (db: number) => 10 ** (db / 20);
@@ -14,7 +17,13 @@ export class AudioEngine {
   private readonly modified = this.gain(1);
   private readonly master = this.gain(1);
   private readonly monitorOut = this.gain(1);
-  private readonly reverb = new LocalReverb(this.context, this.monitorOut, this.master);
+  private readonly pitchOut = this.gain(1);
+  readonly equalizerOutput = this.gain(1);
+  private readonly pitch = new PitchStage(this.context, this.monitorOut, this.pitchOut,
+    chrome.runtime.getURL('pitch-processor.mjs'), this.onTimingChange);
+  private readonly equalizer = new EqualizerStage(this.context, this.pitchOut, this.equalizerOutput);
+  private readonly reverb = new LocalReverb(this.context, this.equalizerOutput, this.master);
+  private tuning?: TuningSettings;
   private reverbSettings: ReverbSettings = { ...defaultReverb };
   private readonly fullInput = this.gain(1);
   private readonly stemInput = this.gain(0);
@@ -42,7 +51,8 @@ export class AudioEngine {
   private readonly feedback = this.gain(0);
   private effects: Readonly<AudioEffectState> = neutralEffects;
 
-  constructor(private readonly context: AudioContext, private readonly stream: MediaStream) {
+  constructor(private readonly context: AudioContext, private readonly stream: MediaStream,
+    private readonly onTimingChange: () => void) {
     this.source.connect(this.analyser);
     this.source.connect(this.original).connect(this.monitorOut);
     const limiter = this.track(context.createDynamicsCompressor());
@@ -101,6 +111,14 @@ export class AudioEngine {
     this.reverbSettings = settings;
     this.reverb.update(settings, this.effects.reverbMix);
   }
+
+  setTuning(settings: TuningSettings): void {
+    if (this.tuning?.eq !== settings.eq) this.equalizer.update(settings.eq);
+    if (this.tuning?.pitch !== settings.pitch) this.pitch.update(settings.pitch);
+    this.tuning = settings;
+  }
+
+  get pitchPlayback() { return this.pitch.status; }
 
   private ramp(param: AudioParam, value: number): void {
     const now = this.context.currentTime;
@@ -193,6 +211,8 @@ export class AudioEngine {
   }
 
   disconnect(): void {
+    this.pitch.close();
+    this.equalizer.close();
     this.reverb.disconnect();
     this.nodes.forEach(node => node.disconnect());
   }

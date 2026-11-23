@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { parse } from 'dotenv';
 import { prepareReverb, checkReverb } from './reverb-browser.mjs';
+import { checkPitchCore, checkTuning, tuningTone } from './tuning-browser.mjs';
 
 const testDir = resolve('.moodshift-test');
 await mkdir(testDir, { recursive: true });
@@ -33,8 +34,17 @@ if (stemPort || (cloudBuild && !localStemsWithCloudApi)) {
 }
 const stemFixture = stemTest && !stemYouTube ? await readFile('.stem-gate/assets/fixture.ogg') : undefined;
 const reverb = process.env.MOODSHIFT_REVERB_TEST ? await prepareReverb() : undefined;
+const tuning = process.env.MOODSHIFT_TUNING_TEST ? tuningTone() : undefined;
 let helper;
 const fixture = createServer((req, res) => {
+  if (tuning && req.url === '/tuning') {
+    res.setHeader('Content-Type', 'text/html');
+    res.end('<title>Stereo tuning fixture</title><audio controls loop src="/tuning.wav"></audio>'); return;
+  }
+  if (tuning && req.url === '/tuning.wav') {
+    res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': tuning.length });
+    res.end(tuning); return;
+  }
   if (reverb && req.url === '/reverb') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end('<title>Reverb local audio</title><audio controls loop src="/reverb-audio"></audio><script src="/reverb-dsp.js"></script>'); return;
@@ -189,6 +199,7 @@ try {
   console.log((await send('Browser.getVersion')).product);
   const { id } = await send('Extensions.loadUnpacked', { path: extensionPath });
   const origin = 'chrome-extension://' + id;
+  if (process.env.MOODSHIFT_TUNING_TEST) await checkPitchCore({ send, attach, evaluate, until, origin });
   const worker = await find(t => t.type === 'service_worker' && t.url.startsWith(origin), 'worker');
   let sw = await attach(worker.targetId);
   const { targetId } = await send('Target.createTarget', { url, forTab: true });
@@ -234,14 +245,14 @@ try {
       console.log(localStemsWithCloudApi ? `Loopback stem build loaded as extension ${id}.` : 'Offscreen cloud authentication passed through the service worker.');
       await selectPanel('home');
     }
-    const click = name => evaluate(view, `[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(name)}).click()`);
+    const click = name => evaluate(view, `[...document.querySelectorAll('button')].find(b => (b.dataset.audioPreset ?? b.textContent) === ${JSON.stringify(name)}).click()`);
     assert.equal(await evaluate(view, "document.querySelector('#presets').children.length"), 4);
     await click('Dreamy');
     await wait(400);
     assert.match(await evaluate(view, "document.querySelector('#feedback').textContent"), /Applied/);
     const afterDreamy = await evaluate(sw, read);
     assert.equal(afterDreamy.status.effects?.reverbMix, 0.33);
-    assert.deepEqual(await evaluate(view, "Array.from(document.querySelectorAll('#presets [aria-pressed=true]'), button => button.textContent)"), ['Dreamy']);
+    assert.deepEqual(await evaluate(view, "Array.from(document.querySelectorAll('#presets [aria-pressed=true]'), button => button.dataset.audioPreset)"), ['Dreamy']);
     await evaluate(view, `window.stemControls = document.querySelector('#stem-controls');
       document.querySelector('#home-tab').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));`);
     assert.equal(await evaluate(view, `document.activeElement.id === 'settings-tab'
@@ -511,6 +522,8 @@ try {
   await until(async () => (await evaluate(sw, 'chrome.tabCapture.getCapturedTabs()'))
     .find(tab => tab.tabId === current.session.tabId)?.status, state => state === 'stopped', 'Tab capture released');
   console.log('Local tone, DSP controls, tab switching and Stop checks passed.');
+  const tuningSnapshot = tuning ? await checkTuning({ send, evaluate, find, attach, until, url, origin, id, sw, read,
+    startStemHelper, stopStemHelper }) : undefined;
   if (reverb) {
     assert.ok(!process.env.MOODSHIFT_REVERB_STEMS || stemPort, 'Reverb stem fixture requires an isolated MOODSHIFT_STEM_TEST_PORT');
     await checkReverb({ send, evaluate, find, attach, until, url, origin, id, sw, read, startStemHelper, stopStemHelper });
@@ -573,9 +586,10 @@ try {
       const video = player?.querySelector('video');
       return { duration: video?.duration, ad: player?.classList.contains('ad-showing') };
     })()`);
-    const media = await until(readMedia, result => result.duration > 180 && result.duration < 210 && !result.ad,
-      'Expected YouTube recording to load', 60);
+    await until(() => evaluate(song, "Boolean(document.querySelector('#movie_player video'))"), Boolean, 'YouTube lyrics player');
     await evaluate(song, "document.querySelector('#movie_player video').play().catch(() => undefined)");
+    const media = await until(readMedia, result => result.duration > 180 && result.duration < 210 && !result.ad,
+      'Expected YouTube recording to load', 160);
     await send('Extensions.triggerAction', { id, targetId: songTab });
     const capture = await until(async () => (await evaluate(sw, read)).status,
       state => state.phase === 'capturing' && state.session.title.includes('Code Monkey'), 'Lyrics capture');
@@ -620,7 +634,7 @@ try {
     assert.equal(await highlighted(), secondLine);
     console.log('Live LRCLIB synchronized lyrics, title/artist, pause, seek, playback rate, offset and panel reopen passed.');
 
-    await evaluate(lyricsPanel, "Array.from(document.querySelectorAll('button')).find(button => button.textContent === 'Dreamy').click()");
+    await evaluate(lyricsPanel, "document.querySelector('[data-audio-preset=Dreamy]').click()");
     await until(async () => (await evaluate(sw, read)).status.effects?.reverbMix,
       reverb => reverb === 0.33, 'Audio preset remains available');
 
@@ -838,14 +852,19 @@ try {
     await send('Extensions.triggerAction', { id, targetId: youtubeTab.targetId });
     const youtubeStatus = await until(
       async () => (await evaluate(sw, read)).status,
-      status => status.phase === 'capturing' && status.features.rms > 0.001,
+      status => status.phase === 'capturing' && status.features.rms > 0.001
+        && (!tuningSnapshot || status.audioTiming.pitch.phase === 'active'),
       'YouTube audio did not reach the analyser',
     );
+    if (tuningSnapshot) {
+      assert.deepEqual(youtubeStatus.tuning, tuningSnapshot.moodshiftTuning);
+      assert.equal(await evaluate(video, "document.querySelector('video').playbackRate"), 1);
+    }
     const playhead = () => evaluate(video, "document.querySelector('video').currentTime");
     const before = await playhead();
     const panel = await find(t => t.url === origin + '/sidepanel.html', 'YouTube side panel');
     const controls = await attach(panel.targetId);
-    await evaluate(controls, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Dreamy').click()");
+    await evaluate(controls, "document.querySelector('[data-audio-preset=Dreamy]').click()");
     await wait(500);
     assert.equal((await evaluate(sw, read)).status.effects.reverbMix, 0.33);
     const windowId = await evaluate(sw, 'chrome.tabs.get(' + youtubeStatus.session.tabId + ').then(tab => tab.windowId)');
@@ -861,6 +880,10 @@ try {
     assert.equal(backgroundCapture.session.id, youtubeStatus.session.id);
     assert.ok(backgroundCapture.features.rms > 0.001);
     assert.equal(backgroundCapture.effects.reverbMix, 0.33);
+    if (tuningSnapshot) {
+      assert.equal(backgroundCapture.audioTiming.pitch.latencySeconds, 0.1);
+      assert.deepEqual(backgroundCapture.tuning, tuningSnapshot.moodshiftTuning);
+    }
     await until(playhead, position => position > before + 0.75, 'Background YouTube playback did not advance');
     if (process.env.MOODSHIFT_WORKER_TEST) {
       await send('Target.detachFromTarget', { sessionId: sw });
@@ -937,6 +960,17 @@ try {
     assert.equal(saved.monitor, 'original');
     assert.equal(saved.stem.mode, 'full');
     console.log('Saved preset persisted across Chrome restart and restored exact DSP settings and monitor offline.');
+  }
+  if (tuningSnapshot) {
+    await closeChrome();
+    [chrome, chromeExited] = launchChrome();
+    const restarted = await send('Extensions.loadUnpacked', { path: extensionPath });
+    assert.equal(restarted.id, id);
+    const domain = await attach((await send('Target.createTarget', { url: origin + '/domain.html' })).targetId);
+    await until(() => evaluate(domain, "document.querySelector('#domain-preset')?.value"),
+      preset => preset === tuningSnapshot.moodshiftTuning.eq.preset, 'Selected custom EQ after browser restart');
+    assert.deepEqual(await evaluate(domain, 'chrome.storage.local.get(Object.keys(' + JSON.stringify(tuningSnapshot) + '))'), tuningSnapshot);
+    console.log('Pitch, EQ preset, precise custom points and Home visibility persisted across Chrome restart.');
   }
 } finally {
   await stopStemHelper();

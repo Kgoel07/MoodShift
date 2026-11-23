@@ -1,6 +1,6 @@
 # MoodShift
 
-MoodShift applies live EQ, filters, reverb, echo, and distortion to one selected Chrome tab. It targets Chrome 116+ on Windows and macOS. The side panel can close while the offscreen audio session keeps running. Presets, sliders, and Original/Modified work without the proxy or an API key.
+MoodShift applies live pitch shifting, EQ, filters, reverb, echo, and distortion to one selected Chrome tab. It targets Chrome 116+ on Windows and macOS. The side panel can close while the offscreen audio session keeps running. Presets, sliders, and Original/Modified work without the proxy or an API key.
 
 ## Install and run
 
@@ -11,7 +11,19 @@ MoodShift applies live EQ, filters, reverb, echo, and distortion to one selected
 5. In Chrome, open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and choose `extension/dist`. Pin MoodShift from Chrome’s Extensions menu for quick access.
 6. Play authorized audio on YouTube. Click the MoodShift icon **from the playing tab** and look for its title and signal in the side panel. Try **Dreamy**, then a prompt such as “Make it warmer and more dreamy.” Press Enter or click **Apply**. Shift+Enter adds a line break. Try **Original**, **Modified**, then **Stop processing**.
 
-Open the panel from Chrome’s side panel menu to inspect the existing session. Use the toolbar icon on a different source tab to switch capture. **Reset** restores neutral values for the current session. Original bypasses EQ and the other DSP controls; the independently enabled reverb applies in both monitor positions.
+Open the panel from Chrome’s side panel menu to inspect the existing session. Use the toolbar icon on a different source tab to switch capture. **Reset** in **Audio Controls** restores neutral values for those controls. **Original** plays the full captured mix with its own path through any enabled Pitch, Equalizer, and Reverb. For a dry comparison, select **Original** and turn off those three effects.
+
+## Pitch and Equalizer
+
+1. During playback, open **Settings → Pitch Control**. Try **−3.0 st** and **+3.0 st** while watching the song's playhead. The slider enables pitch and changes it in 0.1-semitone increments from −6 to +6. Use **Enable pitch** to bypass and retain the value. **Reset pitch** returns the slider to zero.
+2. Open **Home → Equalizer**. Adjust the six sliders or pick **Balanced**, **Bass Boost**, **Vocal Clarity**, **Warm**, or **Bright**. Each band supports −12 to +12 dB. **Enable EQ** bypasses or restores the current curve. **Reset EQ** returns to the six flat bands and clears any added points.
+3. Click **⛶ Domain Expansion** to open a larger editor in a Chrome tab. Drag a point to change frequency and gain, or use the frequency, gain, and bandwidth (Q) fields for exact values. Use the arrow keys with a point focused to move it. Click the graph or **Add point** to add up to twelve custom points. Select one and use **Remove point** to delete it. The graph shows the cascade’s frequency response over the live spectrum. Large overlapping boosts may trigger automatic headroom in the curve.
+4. Open **Save an EQ preset**, enter a name, and click **Save preset**. Recall it from either EQ view. The preset includes the six base bands and any added points with their frequency, gain, and Q. **My Presets** can save a full mix that includes Pitch and EQ settings.
+5. Use **Settings → Customize Home** to set which controls appear on Home. Close Domain Expansion or the panel while playback is running, then reopen it to check that the shared settings persist. Pitch, EQ, and Home visibility also persist across Chrome restarts.
+
+Pitch uses the packaged Signalsmith Stretch AudioWorklet with stereo processing. Its measured algorithmic delay is 100 ms at 44.1 and 48 kHz for a nonzero setting. Lyrics and chords account for this delay automatically. Pitch at zero takes the dry path. The capture can run through optional live stem separation, Pitch, Equalizer, and Reverb in the same local audio graph. [Signalsmith Stretch Web documentation](https://github.com/Signalsmith-Audio/signalsmith-stretch/blob/main/web/release/README.md)
+
+For a listening check, try vocals and percussion at ±3 and ±6 semitones, then turn pitch off during the song. The bypass crossfade changes the amount of processing delay. Larger offsets can color transients or voices, depending on the recording.
 
 ## Reverb without a stem worker
 
@@ -25,7 +37,7 @@ Build or reload MoodShift, then reload the YouTube watch page so Chrome injects 
 
 Edit **Song Title** and **Artist** and click **Search lyrics** if YouTube identifies the song incorrectly. MoodShift looks for matching title and artist and checks that the recording’s duration is within two seconds. It shows plain lyrics when an otherwise matching record has no timing. Different edits, live performances, and ambiguous results may have no verified match. [LRCLIB API](https://lrclib.net/docs)
 
-**Lyric offset** starts at `0` and applies to both lyrics and chord highlights. Use a positive value to delay them and a negative value to advance them. With delayed stem playback, try `+2.8` seconds and adjust by ear. Original and Full Mix usually need less offset. The offset persists locally.
+**Lyric offset** starts at `0` and applies to both lyrics and chord highlights. Use a positive value to delay them and a negative value to advance them. With delayed stem playback, try `+2.8` seconds and adjust by ear. Pitch’s additional latency is applied automatically. The offset persists locally.
 
 Lyrics work without Gemini or the stem helper. MoodShift sends only the song title and artist to LRCLIB. The extension caches recent lookup results and song corrections for the current Chrome session.
 
@@ -51,7 +63,7 @@ Saved presets are shared across songs in the same Chrome profile. They use local
 
 ## Side panel and sound preferences
 
-**Home** starts with four quick presets: Dreamy, Warm, Underwater, and Bass Boost. The prompt and Original/Modified controls sit below them. **Settings → Customize Home** lets you pin Lyrics, Stems, Reverb, Audio Controls, and My Presets. Lyrics and Stems appear by default. Settings always provides access to all five sections, plus Chords and Sound Preferences. Hiding a section from Home leaves its settings and any active effect intact. Use the Left and Right arrow keys to switch tabs while a tab button has focus. MoodShift remembers the selected tab and Home layout in this Chrome profile.
+**Home** starts with four quick presets, 🌙 Dreamy, ☀️ Warm, 🌊 Underwater, and 🔊 Bass Boost. The prompt and Original/Modified controls sit below them. **Settings → Customize Home** lets you pin Lyrics, Stems, Reverb, Audio Controls, My Presets, Pitch Control, and Equalizer. Lyrics, Stems, and a collapsed Equalizer appear by default. Settings provides access to every section, plus Chords and Sound Preferences. Hiding a section from Home leaves its settings and any active effect intact. Use the Left and Right arrow keys to switch tabs while a tab button has focus. MoodShift remembers the selected tab and Home layout in this Chrome profile.
 
 The Now Playing bar uses the captured tab's title and platform. On supported YouTube watch pages it shows the song and artist from the existing playback integration and loads the current video thumbnail from YouTube. Spotify and SoundCloud use the tab title and a platform icon. Other sources show the tab title and a music icon.
 
@@ -130,13 +142,15 @@ Use authorized audio. A Creative Commons option is Kevin MacLeod’s “Carefree
 - The worker coordinates the toolbar, session selection and metadata. The offscreen document owns the live audio track, one Web Audio graph, and current settings. Start uses Chrome’s worker-to-offscreen stream ID flow. [Chrome capture guide](https://developer.chrome.com/docs/extensions/how-to/web-platform/screen-capture)
 - The settings in `extension/src/shared/effects.ts` define the effect ranges, defaults, and presets. Original and Modified share the same output. Modified uses neutral filter bypasses and a conservative limiter. Updates ramp over roughly 300 ms.
 - Each effect prompt sends text, current effect values, and a two-second summary of RMS and frequency bands to the loopback proxy. It sends those fields and any opted-in preference context to Gemini. Audio samples, tab titles, and URLs stay out of the Gemini request. The proxy validates Gemini’s structured patches and reports unsupported requests. [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output)
-- MoodShift processes the selected Chrome tab. Desktop apps, system-wide audio, tempo and pitch changes, instrument replacement, and recording are outside the project scope.
+- MoodShift processes the selected Chrome tab. It supports independent pitch and the Slowed + Reverb mode on supported YouTube watch pages. Desktop apps, system-wide audio, general tempo editing, instrument replacement, and recording are outside the project scope.
 
 ## Repeat the browser smoke test
 
 After building, run `node tests/chrome-smoke.mjs` with current desktop Chrome installed. The script uses a disposable headless profile and a locally generated tone. On PowerShell, set `$env:MOODSHIFT_YOUTUBE_TEST='1'` before the command to add the YouTube check. Also set `$env:MOODSHIFT_WORKER_TEST='1'` to wait for the worker to go idle during YouTube playback. Set `MOODSHIFT_CHROME_PATH` to the Chrome executable if it is installed outside the default Windows location. This test checks capture and state programmatically. Use the listening checklist to assess audio quality and direct speaker output.
 
 Set `MOODSHIFT_CHORDS_TEST=1` to exercise the live Songle timeline, `MOODSHIFT_PRESETS_TEST=1` to verify exact restoration across a Chrome restart, and `MOODSHIFT_MEMORY_TEST=1` to exercise local Sound Preferences with mocked Gemini responses. If another MoodShift session is using the stem helper, set `MOODSHIFT_STEM_TEST_PORT` to a free port such as `18788`. The test uses a disposable copy of the bundled extension and starts a separate helper on that port.
+
+Set `$env:MOODSHIFT_TUNING_TEST='1'` before running `node tests/chrome-smoke.mjs` to measure stereo pitch and EQ response in Chrome, exercise Domain Expansion during capture, and verify persistence after browser restart. `$env:MOODSHIFT_TUNING_SOAK='120'` adds two minutes of playback with the panel closed. To also check routing through the stem buffer with the test PCM worker, set `$env:MOODSHIFT_REVERB_STEMS='1'` and `$env:MOODSHIFT_STEM_TEST_PORT='9191'` with the Python dependencies from the optional stem setup installed.
 
 ## Private cloud demo
 

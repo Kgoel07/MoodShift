@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MoodShift</title>
   <link rel="stylesheet" href="sidepanel.css">
+  <link rel="stylesheet" href="tuning.css">
 </head>
 <body>
   <main>
@@ -55,6 +56,8 @@
       </div>
       <div id="home-lyrics" hidden></div>
       <div id="home-stems" hidden></div>
+      <div id="home-equalizer" hidden></div>
+      <div id="home-pitch" hidden></div>
       <div id="home-reverb" hidden></div>
       <div id="home-controls" hidden></div>
       <div id="home-presets" hidden></div>
@@ -67,6 +70,36 @@
         <div id="home-layout-controls"></div>
         <p id="home-layout-status" class="setting-help" role="status"></p>
       </details>
+      <div id="settings-pitch">
+        <details id="pitch-control">
+          <summary>Pitch Control</summary>
+          <fieldset aria-label="Pitch control" disabled>
+            <div class="effect-header">
+              <label class="effect-toggle"><input id="pitch-enabled" type="checkbox"> Enable pitch</label>
+              <button id="pitch-reset" type="button">Reset pitch</button>
+            </div>
+            <label for="pitch-value">Pitch <output id="pitch-readout" for="pitch-value">0.0 st</output>
+              <input id="pitch-value" type="range" value="0">
+            </label>
+          </fieldset>
+          <p id="pitch-status" class="setting-help" role="status"></p>
+        </details>
+      </div>
+      <div id="settings-equalizer">
+        <details id="equalizer">
+          <summary>Equalizer</summary>
+          <fieldset aria-label="Six band equalizer" disabled>
+            <div class="effect-header">
+              <label class="effect-toggle"><input id="eq-enabled" type="checkbox" checked> Enable EQ</label>
+              <button id="eq-reset" type="button">Reset EQ</button>
+            </div>
+            <label class="eq-preset-field" for="eq-preset">EQ preset <select id="eq-preset" data-eq-preset></select></label>
+            <canvas class="eq-compact-chart" role="img" aria-label="Equalizer frequency response from 20 Hz to 20 kHz"></canvas>
+            <div id="eq-bands" aria-label="Band gains in decibels"></div>
+          </fieldset>
+          <button id="open-domain" type="button" class="domain-link">⛶ Domain Expansion</button>
+        </details>
+      </div>
       <div id="settings-controls">
         <details id="effect-settings">
           <summary>Audio Controls</summary>

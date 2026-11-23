@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applySavedPreset, editPreset, listPresets, savedPresetsKey, validatePreset, type SavedPreset } from '../extension/src/saved-presets';
 import { neutralEffects } from '../extension/src/shared/effects';
 import type { Reply, WorkerCommand } from '../extension/src/shared/messages';
+import { changeTuning, defaultTuning } from '../extension/src/shared/tuning';
 import { silentFeatures, type CaptureStatus } from '../extension/src/shared/types';
 
 type Capture = Extract<CaptureStatus, { phase: 'capturing' }>;
@@ -32,6 +33,23 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('local saved presets', () => {
+  it('restores pitch and EQ for new full presets and retains tuning when recalling a legacy preset', async () => {
+    const tuning = changeTuning(defaultTuning(), { kind: 'pitch', patch: { enabled: true, semitones: -4.1 } });
+    const withEq = changeTuning(tuning, { kind: 'eq-preset', preset: 'warm' });
+    await save();
+    await editPreset({ type: 'save', name: 'Warm and low', capture: { ...capture, tuning: withEq } });
+    const [legacy, saved] = (await listPresets()).presets;
+    expect(legacy.tuning).toBeUndefined();
+    expect(saved.tuning).toEqual(withEq);
+    const send = vi.fn<(message: WorkerCommand) => Promise<Reply>>()
+      .mockResolvedValue({ ok: true, status: { ...capture, tuning: withEq } });
+    await applySavedPreset(saved, { ...capture, tuning }, () => true, send);
+    expect(send.mock.calls[0][0]).toMatchObject({ type: 'APPLY_EFFECTS', tuning: withEq });
+    send.mockClear();
+    const restored = await applySavedPreset(legacy, { ...capture, tuning: withEq }, () => true, send);
+    expect(send.mock.calls[0][0]).not.toHaveProperty('tuning');
+    expect(restored.status.tuning).toEqual(withEq);
+  });
   it('round-trips optional reverb settings while leaving legacy presets valid', async () => {
     await save();
     const legacy = (await listPresets()).presets[0];

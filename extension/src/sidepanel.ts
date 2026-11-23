@@ -12,6 +12,8 @@ import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatur
 import { usesCloudStems } from './shared/deployment';
 import { mountNowPlaying } from './now-playing';
 import { paintRange } from './range-control';
+import { TuningClient } from './tuning-client';
+import { mountCompactEq, mountPitch } from './tuning-panel';
 import { apiErrorDetail, apiRequest, CloudAccessError } from './api-client';
 
 mountPanelTabs();
@@ -53,13 +55,17 @@ const personalization = mountPersonalization(document.querySelector<HTMLElement>
 const reverb = mountReverb(document.querySelector<HTMLElement>('#audio-effects')!, patch => {
   if (status.phase === 'capturing') void command({ type: 'SET_REVERB', sessionId: status.session.id, patch });
 }, cancelInterpretation);
+const tuning = new TuningClient(message => { feedback.textContent = message; }, cancelInterpretation);
+mountPitch(document.querySelector<HTMLElement>('#pitch-control')!, tuning);
+mountCompactEq(document.querySelector<HTMLElement>('#equalizer')!, tuning, message => { feedback.textContent = message; });
+tuning.subscribe(() => updateApply());
 
 document.querySelector<HTMLElement>('#cloud-stem-note')!.hidden = !usesCloudStems();
 
 function updateApply(): void {
-  applyButton.disabled = status.phase !== 'capturing' || stopping || commandPending
+  applyButton.disabled = status.phase !== 'capturing' || stopping || commandPending || tuning.busy
     || interpretation !== undefined || Object.keys(queuedEdits).length > 0 || !promptInput.value.trim();
-  savedPresets.setCaptureReady(status.phase === 'capturing' && !stopping && !commandPending
+  savedPresets.setCaptureReady(status.phase === 'capturing' && !stopping && !commandPending && !tuning.busy
     && !interpretation && !Object.keys(queuedEdits).length
     && status.stem.phase !== 'loading' && status.stem.phase !== 'buffering');
 }
@@ -112,11 +118,21 @@ const sliders = effectKeys.filter(key => key !== 'reverbMix').map(key => {
 });
 
 const quickPresets = ['Dreamy', 'Warm', 'Bass Boost', 'Underwater'];
+const presetEmojis: Record<string, string> = { Dreamy: '🌙', Warm: '☀️', 'Bass Boost': '🔊', Underwater: '🌊' };
 const morePresets = document.querySelector('#other-presets')!;
 const presetButtons = [...Object.entries(presets), ['Reset', neutralEffects] as const].map(([name, patch]) => {
   const button = document.createElement('button');
   button.type = 'button';
-  button.textContent = name;
+  button.dataset.audioPreset = name;
+  const emoji = presetEmojis[name];
+  if (emoji) {
+    const icon = document.createElement('span');
+    icon.textContent = emoji;
+    icon.setAttribute('aria-hidden', 'true');
+    icon.className = 'preset-emoji';
+    button.append(icon, name);
+    button.setAttribute('aria-label', name);
+  } else button.textContent = name;
   button.addEventListener('click', () => {
     clearEdits();
     applyLocal(patch);
@@ -170,8 +186,10 @@ function render(next: CaptureStatus): void {
     feedback.textContent = '';
   }
   status = next;
+  tuning.accept(next);
   nowPlaying.setStatus(next);
   lyrics.setSource(next.phase === 'capturing' ? next.session : undefined);
+  lyrics.setPitchDelay(next.phase === 'capturing' ? next.audioTiming?.pitch.latencySeconds ?? 0 : 0);
   updateApply();
   stopButton.disabled = next.phase !== 'capturing' || stopping;
   const enabled = !stopButton.disabled && !presetApplying;
@@ -213,14 +231,14 @@ function render(next: CaptureStatus): void {
 }
 
 async function readCapture() {
-  if (status.phase !== 'capturing' || commandPending || stopping || interpretation || Object.keys(queuedEdits).length) {
+  if (status.phase !== 'capturing' || commandPending || stopping || interpretation || tuning.busy || Object.keys(queuedEdits).length) {
     throw new Error('Wait for the current audio change to finish.');
   }
   const sessionId = status.session.id;
   const reply = await toWorker({ type: 'GET_STATUS' });
   if (!reply.ok || reply.status.phase !== 'capturing' || reply.status.session.id !== sessionId
     || status.phase !== 'capturing' || status.session.id !== sessionId || commandPending || stopping
-    || interpretation || Object.keys(queuedEdits).length) {
+    || interpretation || tuning.busy || Object.keys(queuedEdits).length) {
     throw new Error('Select a tab and wait for the current audio change to finish.');
   }
   return reply.status;

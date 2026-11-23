@@ -5,6 +5,7 @@ import { cloudDemoCode } from './api-client';
 import { installLyricsLookup } from './lyrics-provider';
 import { installChordLookup } from './chords-provider';
 import { platformFor } from './shared/track';
+import { changeTuning, readTuning, tuningKey } from './shared/tuning';
 
 installLyricsLookup();
 installChordLookup();
@@ -54,9 +55,16 @@ async function audioStatus(): Promise<CaptureStatus> {
 }
 
 async function status(): Promise<CaptureStatus> {
-  if (starting) return { phase: 'starting', source: starting };
+  if (starting) return { phase: 'starting', source: starting, tuning: await storedTuning() };
   const current = await audioStatus();
-  return failure && current.phase !== 'capturing' ? { phase: 'error', message: failure } : current;
+  if (current.phase === 'capturing') return current;
+  const tuning = await storedTuning();
+  return failure ? { phase: 'error', message: failure, tuning } : { ...current, tuning };
+}
+
+async function storedTuning() {
+  try { return readTuning((await chrome.storage.local.get(tuningKey))[tuningKey]); }
+  catch (error) { console.warn('MoodShift could not load pitch and EQ settings', error); return readTuning(undefined); }
 }
 
 async function remember(current: CaptureStatus): Promise<void> {
@@ -83,8 +91,9 @@ async function select(source: SourceTab): Promise<void> {
     if (current.phase === 'capturing') await stop(current.session.id);
     await ensureOffscreen();
     const session = { ...source, id: crypto.randomUUID() };
+    const tuning = await storedTuning();
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: source.tabId });
-    const reply = await toAudio({ type: 'START', session, streamId });
+    const reply = await toAudio({ type: 'START', session, streamId, tuning });
     if (!reply.ok) throw new Error(reply.message);
     await remember(reply.status);
   } catch (error) {
@@ -190,14 +199,29 @@ chrome.runtime.onMessage.addListener((message: WorkerMessage | StemCodeRequest |
       if (message.type === 'STOP') {
         const current = await stop(message.sessionId);
         statusChanged();
-        return { ok: true, status: current };
+        return { ok: true, status: current.phase === 'capturing' ? current : { ...current, tuning: await storedTuning() } };
       }
-      if (message.type !== 'APPLY_EFFECTS' && message.type !== 'SET_MONITOR' && message.type !== 'SET_REVERB') {
+      if (message.type === 'SET_TUNING' && message.sessionId === undefined) {
+        const current = await status();
+        if (current.phase === 'capturing') return { ok: false, message: 'The selected tab changed. Please try again.' };
+        const tuning = changeTuning(current.tuning!, message.edit);
+        await chrome.storage.local.set({ [tuningKey]: tuning });
+        statusChanged();
+        return { ok: true, status: { ...current, tuning } };
+      }
+      if (message.type !== 'APPLY_EFFECTS' && message.type !== 'SET_MONITOR' && message.type !== 'SET_REVERB'
+        && message.type !== 'SET_TUNING') {
         return { ok: false, message: 'Unknown audio command.' };
       }
       if (!await hasOffscreen()) return { ok: false, message: 'Select an audio tab with the MoodShift icon.' };
       const reply = await toAudio(message);
-      if (reply.ok) statusChanged();
+      if (reply.ok) {
+        try {
+          if (reply.status.tuning && (message.type === 'SET_TUNING' || (message.type === 'APPLY_EFFECTS' && message.tuning))) {
+            await chrome.storage.local.set({ [tuningKey]: reply.status.tuning });
+          }
+        } finally { statusChanged(); }
+      }
       return reply;
     });
   void operation.then(

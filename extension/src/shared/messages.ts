@@ -2,8 +2,10 @@ import type { AudioFeatures, CaptureSession, CaptureStatus, MonitorMode, StemMod
 import type { EffectPatch } from './effects';
 import type { ReverbPatch, ReverbSettings } from './reverb';
 import type { SourcePlatform } from './track';
+import type { TuningEdit, TuningSettings } from './tuning';
 
-type EffectChange = { type: 'APPLY_EFFECTS'; sessionId: string; patch: EffectPatch; baseRevision?: number; reverb?: ReverbSettings };
+type EffectChange = { type: 'APPLY_EFFECTS'; sessionId: string; patch: EffectPatch; baseRevision?: number; reverb?: ReverbSettings; tuning?: TuningSettings };
+type TuningChange = { type: 'SET_TUNING'; sessionId?: string; edit: TuningEdit };
 type ReverbChange = { type: 'SET_REVERB'; sessionId: string; patch: ReverbPatch };
 type MonitorChange = { type: 'SET_MONITOR'; sessionId: string; monitor: MonitorMode; baseRevision?: number };
 type StemChange = { type: 'SET_STEM'; sessionId: string; mode: StemMode; baseRevision?: number };
@@ -12,15 +14,17 @@ export type WorkerCommand =
   | { type: 'GET_STATUS' }
   | { type: 'STOP'; sessionId: string }
   | EffectChange
+  | TuningChange
   | ReverbChange
   | MonitorChange
   | StemChange;
 export type AudioCommand =
   | { type: 'READ' }
-  | { type: 'START'; session: CaptureSession; streamId: string }
+  | { type: 'START'; session: CaptureSession; streamId: string; tuning?: TuningSettings }
   | { type: 'STOP'; sessionId: string }
   | { type: 'UPDATE_TAB'; sessionId: string; title?: string; muted?: boolean; platform?: SourcePlatform }
   | EffectChange
+  | TuningChange
   | ReverbChange
   | MonitorChange
   | StemChange;

@@ -1,6 +1,7 @@
 import { clampPatch, effectKeys, type AudioEffectState, type EffectPatch } from './effects.js';
 import type { ReverbState } from './reverb';
 import type { SourcePlatform } from './track';
+import type { AudioTiming, TuningSettings } from './tuning';
 
 export interface SourceTab {
   tabId: number;
@@ -13,7 +14,7 @@ export interface CaptureSession extends SourceTab {
   id: string;
 }
 
-export type CaptureStatus =
+export type CaptureStatus = (
   | { phase: 'ready' }
   | { phase: 'starting'; source: SourceTab }
   | {
@@ -21,13 +22,15 @@ export type CaptureStatus =
       session: CaptureSession;
       effects: AudioEffectState;
       reverb?: ReverbState;
+      audioTiming?: AudioTiming;
       revision: number;
       monitor: MonitorMode;
       stem: StemStatus;
       features: AudioFeatures;
       outputPaused: boolean;
     }
-  | { phase: 'error'; message: string };
+  | { phase: 'error'; message: string }
+) & { tuning?: TuningSettings };
 
 export type MonitorMode = 'original' | 'modified';
 export const stemModes = ['full', 'instrumental', 'vocals'] as const;

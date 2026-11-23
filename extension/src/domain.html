@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Domain Expansion · MoodShift</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <link rel="stylesheet" href="tuning.css">
+</head>
+<body>
+  <main class="domain-shell">
+    <header class="domain-heading">
+      <img src="assets/icon-48.png" alt="" width="38" height="38" class="brand-mark">
+      <div>
+        <h1>Domain Expansion</h1>
+        <p id="domain-source" class="setting-help">Equalizer · MoodShift</p>
+      </div>
+      <button id="domain-close" type="button">Close editor</button>
+    </header>
+
+    <section class="domain-card" aria-label="Interactive equalizer">
+      <fieldset id="domain-toolbar" aria-label="Equalizer controls" disabled>
+        <label class="effect-toggle"><input id="domain-enabled" type="checkbox" checked> Enable EQ</label>
+        <label class="eq-preset-field" for="domain-preset">EQ preset <select id="domain-preset" data-eq-preset></select></label>
+        <button id="domain-reset" type="button">Reset EQ</button>
+      </fieldset>
+      <div class="eq-plot" id="domain-plot" aria-label="EQ graph">
+        <canvas id="domain-canvas" role="img" aria-label="Combined EQ response and live spectrum from 20 Hz to 20 kHz"></canvas>
+        <div id="domain-points" aria-label="EQ control points"></div>
+      </div>
+      <div class="domain-plot-caption">
+        <p id="plot-help">Drag a point to change frequency and gain. Click the graph to add one.</p>
+        <p id="eq-trim" hidden></p>
+      </div>
+      <fieldset class="point-controls" id="point-controls" aria-label="Selected EQ point" disabled>
+        <label for="domain-band">Point <select id="domain-band"></select></label>
+        <label for="point-frequency">Frequency (Hz) <input id="point-frequency" type="number" min="20" max="20000" step="1"></label>
+        <label for="point-gain">Gain (dB) <input id="point-gain" type="number" min="-12" max="12" step="0.1"></label>
+        <label for="point-q" title="Higher Q narrows the band">Bandwidth (Q) <input id="point-q" type="number" min="0.3" max="12" step="0.01"></label>
+        <div class="point-actions">
+          <button id="point-add" type="button">Add point</button>
+          <button id="point-delete" type="button" disabled>Remove point</button>
+        </div>
+      </fieldset>
+    </section>
+    <details class="domain-presets">
+      <summary>Save an EQ preset</summary>
+      <form id="eq-preset-form">
+        <label for="preset-name">Preset name</label>
+        <div class="domain-preset-actions">
+          <input id="preset-name" type="text" maxlength="48" required autocomplete="off">
+          <button type="submit">Save preset</button>
+          <button id="eq-preset-delete" type="button" hidden>Delete selected preset</button>
+        </div>
+      </form>
+    </details>
+    <p class="setting-help" id="domain-status" role="status"></p>
+  </main>
+  <script src="domain.js"></script>
+</body>
+</html>
