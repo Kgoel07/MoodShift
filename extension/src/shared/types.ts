@@ -1,7 +1,7 @@
 import { clampPatch, effectKeys, type AudioEffectState, type EffectPatch } from './effects.js';
-import type { ReverbState } from './reverb';
-import type { SourcePlatform } from './track';
-import type { AudioTiming, TuningSettings } from './tuning';
+import type { ReverbState } from './reverb.js';
+import type { SourcePlatform } from './track.js';
+import type { AudioTiming, TuningSettings } from './tuning.js';
 
 export interface SourceTab {
   tabId: number;

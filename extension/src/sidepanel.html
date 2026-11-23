@@ -47,6 +47,7 @@
         <textarea id="prompt" rows="3" maxlength="500" placeholder="Make it warmer and more dreamy" aria-describedby="prompt-help"></textarea>
         <div class="form-actions">
           <span id="prompt-help">Enter to apply · Shift+Enter for a new line</span>
+          <button id="voice-command" type="button" aria-label="Open voice commands" title="Voice command">🎙️</button>
           <button id="apply" type="submit" disabled>Apply</button>
         </div>
       </form>
@@ -138,7 +139,7 @@
       <div id="settings-lyrics">
         <details id="lyrics" open>
           <summary>Lyrics</summary>
-          <p id="lyrics-status" role="status">Select a playing YouTube tab with the MoodShift icon.</p>
+          <p id="lyrics-status" role="status">Select a playing tab with the MoodShift icon.</p>
           <div id="lyrics-viewport" role="region" aria-label="Song lyrics" tabindex="0" hidden></div>
           <details id="lyric-options" hidden>
             <summary>Find lyrics and adjust timing</summary>
@@ -183,8 +184,8 @@
       </div>
       <details id="chords">
         <summary>Chords</summary>
-        <p id="chords-status" role="status">Select a YouTube watch tab with the MoodShift icon.</p>
-        <button type="button" id="chords-retry" hidden>Retry Songle</button>
+        <p id="chords-status" role="status">Select a playing tab with the MoodShift icon.</p>
+        <button type="button" id="chords-retry" hidden>Try again</button>
         <div id="chords-content" hidden>
           <p>Current Chord: <strong id="chord-current">—</strong> · Next: <strong id="chord-next">—</strong></p>
           <div id="chord-progression" aria-label="Chord progression" tabindex="0"></div>

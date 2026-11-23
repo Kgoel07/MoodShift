@@ -8,13 +8,13 @@ import { mountPanelTabs } from './panel-tabs';
 import { mountReverb } from './reverb-panel';
 import { explicitPreference } from './shared/preferences';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
-import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
+import { silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
 import { usesCloudStems } from './shared/deployment';
 import { mountNowPlaying } from './now-playing';
 import { paintRange } from './range-control';
 import { TuningClient } from './tuning-client';
 import { mountCompactEq, mountPitch } from './tuning-panel';
-import { apiErrorDetail, apiRequest, CloudAccessError } from './api-client';
+import { CommandFeedbackError, runNaturalCommand } from './natural-command';
 
 mountPanelTabs();
 
@@ -160,6 +160,7 @@ function applyLocal(patch: EffectPatch): void {
 for (const button of monitorButtons) {
   button.addEventListener('click', () => {
     if (status.phase !== 'capturing') return;
+    cancelInterpretation();
     const monitor = button.dataset.mode as MonitorMode;
     void command({ type: 'SET_MONITOR', sessionId: status.session.id, monitor });
   });
@@ -188,8 +189,9 @@ function render(next: CaptureStatus): void {
   status = next;
   tuning.accept(next);
   nowPlaying.setStatus(next);
+  chords.setCapture(nextId);
   lyrics.setSource(next.phase === 'capturing' ? next.session : undefined);
-  lyrics.setPitchDelay(next.phase === 'capturing' ? next.audioTiming?.pitch.latencySeconds ?? 0 : 0);
+  lyrics.setTiming(next.phase === 'capturing' ? next.audioTiming : undefined);
   updateApply();
   stopButton.disabled = next.phase !== 'capturing' || stopping;
   const enabled = !stopButton.disabled && !presetApplying;
@@ -269,33 +271,21 @@ async function restorePreset(preset: SavedPreset): Promise<string> {
   }
 }
 
-async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, detail = '', stemMode?: StemMode): Promise<void> {
+async function command(message: Extract<WorkerCommand, { type: 'APPLY_EFFECTS' | 'SET_STEM' | 'SET_REVERB' | 'SET_MONITOR' | 'STOP' }>): Promise<void> {
   const id = ++commandId;
   commandPending = true;
   updateApply();
   refreshId++;
   if (message.type === 'APPLY_EFFECTS' || message.type === 'SET_STEM' || message.type === 'SET_REVERB') feedback.textContent = 'Applying…';
   try {
-    let reply = await toWorker(message);
+    const reply = await toWorker(message);
     if (id !== commandId) return;
     if (!reply.ok) throw new Error(reply.message);
-    if (message.type === 'APPLY_EFFECTS' && stemMode && reply.status.phase === 'capturing') {
-      reply = await toWorker({
-        type: 'SET_STEM', mode: stemMode, sessionId: message.sessionId, baseRevision: reply.status.revision,
-      });
-      if (id !== commandId) return;
-      if (!reply.ok) {
-        console.warn('MoodShift stem unavailable', reply.message);
-        feedback.textContent = 'Effects updated. The separated mix is unavailable right now.';
-        void refresh();
-        return;
-      }
-    }
     refreshId++;
     render(reply.status);
     if ((message.type === 'APPLY_EFFECTS' || message.type === 'SET_STEM' || message.type === 'SET_REVERB')
       && reply.status.phase === 'capturing' && reply.status.session.id === message.sessionId) {
-      feedback.textContent = detail ? `Applied ✓ · ${detail}` : 'Applied ✓';
+      feedback.textContent = 'Applied ✓';
     }
   } catch (error) {
     if (id !== commandId) return;
@@ -338,15 +328,17 @@ stopButton.addEventListener('click', () => {
 });
 
 promptInput.addEventListener('input', updateApply);
+document.querySelector('#voice-command')!.addEventListener('click', () => {
+  void toWorker({ type: 'OPEN_VOICE' }).then(reply => {
+    if (!reply.ok) feedback.textContent = reply.message;
+  }).catch(() => { feedback.textContent = 'Couldn’t open voice commands.'; });
+});
 promptInput.addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     form.requestSubmit();
   }
 });
-
-class GeminiUnavailable extends Error {}
-class UserApiError extends Error {}
 
 form.addEventListener('submit', async event => {
   event.preventDefault();
@@ -358,68 +350,21 @@ form.addEventListener('submit', async event => {
     if (promptInput.value.trim() === prompt && !interpretation) feedback.textContent = message;
     return;
   }
-  const { session, effects, revision, features, outputPaused } = status;
-  const direct = directStemIntent(prompt);
-  if (direct === 'unsupported') {
-    feedback.textContent = 'Unsupported · Beat, drum and bass isolation require separate stems.';
-    return;
-  }
-  if (direct) {
-    await command({ type: 'SET_STEM', sessionId: session.id, mode: direct });
-    return;
-  }
+  const sessionId = status.session.id;
   const request = { id: crypto.randomUUID(), controller: new AbortController() };
   interpretation = request;
   updateApply();
   feedback.textContent = 'Interpreting…';
-  const deadline = setTimeout(() => request.controller.abort(), 15_000);
   try {
-    const response = await apiRequest('/api/interpret', {
-        prompt, currentEffects: effects,
-        audioFeatures: session.muted || outputPaused ? silentFeatures : features,
-        ...personalization.context(prompt),
-    }, request.controller.signal);
-    if (!response.ok) {
-      const detail = apiErrorDetail(response);
-      if (response.status === 504) throw new UserApiError('That took longer than expected. Please try again.');
-      if (response.status >= 500) throw new GeminiUnavailable(detail);
-      throw new UserApiError(detail);
-    }
-    const body = await response.json();
+    const result = await runNaturalCommand(prompt, { sessionId, signal: request.controller.signal,
+      applying: () => { feedback.textContent = 'Applying…'; } });
     if (interpretation?.id !== request.id) return;
-    const result = parseInterpretation(body, effects);
-    const detail = [result.summary, result.unsupported.length ? `Unsupported · ${result.unsupported.join(', ')}` : '']
-      .filter(Boolean).join(' ');
-    if (result.mode === 'unsupported') {
-      feedback.textContent = detail;
-      return;
-    }
-    if (result.mode === 'patch' && Object.keys(result.patch).length === 0) {
-      if (result.stemMode) {
-        await command({ type: 'SET_STEM', sessionId: session.id, mode: result.stemMode, baseRevision: revision }, detail);
-      } else feedback.textContent = detail;
-      return;
-    }
-    await command({
-      type: 'APPLY_EFFECTS',
-      sessionId: session.id,
-      baseRevision: revision,
-      patch: result.mode === 'reset' ? neutralEffects : result.patch,
-    }, detail, result.stemMode);
+    feedback.textContent = result.message;
+    if (result.status) void refresh();
   } catch (error) {
     if (interpretation?.id !== request.id) return;
-    if (request.controller.signal.aborted) {
-      feedback.textContent = 'Error · Gemini timed out. Try again.';
-    } else if (error instanceof TypeError || error instanceof GeminiUnavailable) {
-      console.warn('MoodShift AI unavailable', error);
-      feedback.textContent = 'Gemini unavailable. Presets and manual controls still work.';
-    } else {
-      console.warn('MoodShift AI request failed', error);
-      feedback.textContent = error instanceof UserApiError || error instanceof CloudAccessError ? error.message
-        : 'Couldn’t apply that request. Try describing the sound again.';
-    }
+    feedback.textContent = error instanceof CommandFeedbackError ? error.message : 'Couldn’t apply that request. Try describing the sound again.';
   } finally {
-    clearTimeout(deadline);
     if (interpretation?.id === request.id) interpretation = undefined;
     updateApply();
   }
@@ -432,6 +377,7 @@ const meterUpdates = new BroadcastChannel(meterChannel);
 meterUpdates.addEventListener('message', (event: MessageEvent<MeterUpdate>) => {
   if (status.phase === 'capturing' && status.session.id === event.data.sessionId) {
     status.features = event.data.features;
+    lyrics.setTiming(event.data.audioTiming);
     renderMeter(event.data.features);
   }
 });

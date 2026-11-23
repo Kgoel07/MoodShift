@@ -1,5 +1,5 @@
-import { defaultEqualizer, changeEq, validateEq, type EqEdit, type EqSettings } from './equalizer';
-import { defaultPitch, pitchSettings, type PitchSettings, type PitchPlayback } from './pitch';
+import { defaultEqualizer, changeEq, validateEq, type EqEdit, type EqSettings } from './equalizer.js';
+import { defaultPitch, pitchSettings, type PitchSettings, type PitchPlayback } from './pitch.js';
 
 export const tuningKey = 'moodshiftTuning';
 export const eqSpectrumPort = 'moodshift-eq-spectrum';
@@ -9,6 +9,7 @@ export interface AudioTiming {
   sampleRate: number;
   stemSeconds: number;
   processingSeconds: number;
+  playoutSeconds: number;
   pitch: PitchPlayback;
 }
 

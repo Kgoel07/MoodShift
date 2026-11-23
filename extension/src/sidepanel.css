@@ -66,6 +66,7 @@ textarea {
 }
 textarea::placeholder { color: var(--muted); opacity: 1; }
 .form-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+#voice-command { margin-left: auto; padding-inline: 8px; }
 button {
   min-height: 32px;
   padding: 5px 10px;

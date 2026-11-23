@@ -210,6 +210,11 @@ export class AudioEngine {
     this.ramp(wet.gain, active ? 1 : 0);
   }
 
+  tapInput(node: AudioNode): () => void {
+    this.source.connect(node);
+    return () => this.source.disconnect(node);
+  }
+
   disconnect(): void {
     this.pitch.close();
     this.equalizer.close();

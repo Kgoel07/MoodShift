@@ -1,4 +1,5 @@
-import { homeLayoutKey, homeSectionKeys, homeSections, readHomeLayout } from './shared/home-layout';
+import { homeSectionKeys, homeSections, readHomeLayout, type HomeSection } from './shared/home-layout';
+import { observeDisplay, setDisplay } from './display-client';
 
 const tabKey = 'moodshiftPanelTab';
 
@@ -9,8 +10,8 @@ export function mountPanelTabs(): void {
   const controls = document.querySelector('#home-layout-controls')!;
   const notice = document.querySelector('#home-layout-status')!;
   let layout = readHomeLayout(undefined);
+  const pending = new Map<HomeSection, { checked: boolean }>();
   let selected = 0;
-  let save = Promise.resolve();
   const sections = homeSectionKeys.map(key => {
     const home = document.querySelector<HTMLElement>(`#home-${key}`)!;
     const settings = document.querySelector<HTMLElement>(`#settings-${key}`)!;
@@ -24,22 +25,27 @@ export function mountPanelTabs(): void {
     label.append(homeSections[key].label, toggle);
     controls.append(label);
     toggle.addEventListener('change', () => {
-      layout = { ...layout, [key]: toggle.checked };
+      const edit = { checked: toggle.checked };
+      pending.set(key, edit);
       updateSections();
-      const pending = layout;
-      save = save.then(() => chrome.storage.local.set({ [homeLayoutKey]: pending }))
-        .then(() => { notice.textContent = ''; })
-        .catch(() => { notice.textContent = 'Couldn’t save the Home layout. Please try again.'; });
+      void setDisplay(`home.${key}`, edit.checked).then(() => {
+        layout[key] = edit.checked;
+        notice.textContent = '';
+      }, () => { notice.textContent = 'Couldn’t save the Home layout. Please try again.'; }).finally(() => {
+        if (pending.get(key) === edit) pending.delete(key);
+        updateSections();
+      });
     });
     return { key, home, settings, element, toggle };
   });
 
   function updateSections(): void {
     for (const { key, home, settings, element, toggle } of sections) {
-      const destination = selected === 0 && layout[key] ? home : settings;
+      const visible = pending.get(key)?.checked ?? layout[key];
+      const destination = selected === 0 && visible ? home : settings;
       if (element.parentElement !== destination) destination.append(element);
       home.hidden = destination !== home;
-      toggle.checked = layout[key];
+      toggle.checked = visible;
     }
   }
 
@@ -66,10 +72,9 @@ export function mountPanelTabs(): void {
     });
   });
   select(['advanced', 'settings'].includes(localStorage.getItem(tabKey) ?? '') ? 1 : 0);
-  void chrome.storage.local.get(homeLayoutKey).then(values => {
-    layout = readHomeLayout(values[homeLayoutKey]);
-  }).catch(() => { notice.textContent = 'Couldn’t load the saved Home layout.'; }).finally(() => {
+  observeDisplay(settings => {
+    layout = settings.home;
     updateSections();
     for (const { toggle } of sections) toggle.disabled = false;
-  });
+  }, () => { notice.textContent = 'Couldn’t load the saved Home layout.'; });
 }

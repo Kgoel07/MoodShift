@@ -7,6 +7,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { parse } from 'dotenv';
 import { prepareReverb, checkReverb } from './reverb-browser.mjs';
 import { checkPitchCore, checkTuning, tuningTone } from './tuning-browser.mjs';
+import { checkCommands, commandFixture } from './commands-browser.mjs';
 
 const testDir = resolve('.moodshift-test');
 await mkdir(testDir, { recursive: true });
@@ -35,8 +36,10 @@ if (stemPort || (cloudBuild && !localStemsWithCloudApi)) {
 const stemFixture = stemTest && !stemYouTube ? await readFile('.stem-gate/assets/fixture.ogg') : undefined;
 const reverb = process.env.MOODSHIFT_REVERB_TEST ? await prepareReverb() : undefined;
 const tuning = process.env.MOODSHIFT_TUNING_TEST ? tuningTone() : undefined;
+const commands = process.env.MOODSHIFT_COMMAND_TEST ? commandFixture() : undefined;
 let helper;
 const fixture = createServer((req, res) => {
+  if (commands && commands(req, res)) return;
   if (tuning && req.url === '/tuning') {
     res.setHeader('Content-Type', 'text/html');
     res.end('<title>Stereo tuning fixture</title><audio controls loop src="/tuning.wav"></audio>'); return;
@@ -78,8 +81,10 @@ let lastId = 0;
 let data = '';
 const requests = new Map();
 function launchChrome() {
+  const voiceFixture = process.env.MOODSHIFT_TEST_VOICE_WAV;
   const processHandle = spawn(process.env.MOODSHIFT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', [
     '--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
+    ...(voiceFixture ? ['--use-fake-device-for-media-stream', '--use-file-for-fake-audio-capture=' + resolve(voiceFixture)] : []),
     '--user-data-dir=' + profile,
     '--remote-debugging-pipe', '--enable-unsafe-extension-debugging', 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true });
@@ -301,12 +306,12 @@ try {
       if (cloudBuild) {
         await evaluate(view, `window.fetch = (url, init) => {
           window.cloudRequest = { url: String(url), authorization: init.headers.Authorization, redirect: init.redirect };
-          return Promise.resolve(Response.json({ mode:'unsupported', patch:{}, summary:'Unsupported', unsupported:['test'] }));
+          return Promise.resolve(Response.json({ actions:[], summary:'Unsupported', unsupported:['test'] }));
         }`);
         await submit();
         await until(getFeedback, text => text.includes('Unsupported'), 'Production API request completed');
         assert.deepEqual(await evaluate(view, 'window.cloudRequest'),
-          { url: new URL('/api/interpret', cloudConfig.API_BASE_URL).href, authorization: 'Bearer ' + smokeCode, redirect: 'error' });
+          { url: new URL('/api/interpret/v2', cloudConfig.API_BASE_URL).href, authorization: 'Bearer ' + smokeCode, redirect: 'error' });
         console.log('Production extension loaded with exact host permissions and sent demo authentication only to its configured HTTPS API.');
       }
       await evaluate(view, "window.unmockedFetch = window.fetch.bind(window); window.fetch = () => Promise.reject(new TypeError('Simulated proxy outage'));");
@@ -315,7 +320,7 @@ try {
       assert.match(await getFeedback(), /Gemini unavailable/);
       assert.equal((await evaluate(sw, read)).status.effects.bassDb, 3.5);
 
-      await evaluate(view, "window.respond = result => Promise.resolve(Response.json(result)); window.fetch = () => respond({mode:'unsupported',patch:{},summary:'Playback speed is unavailable.',unsupported:['Slow playback']})");
+      await evaluate(view, "window.respond = result => Promise.resolve(Response.json(result)); window.fetch = () => respond({actions:[],summary:'Playback speed is unavailable.',unsupported:['Slow playback']})");
       const revision = (await evaluate(sw, read)).status.revision;
       await submit();
       await wait(200);
@@ -323,13 +328,13 @@ try {
       assert.doesNotMatch(await getFeedback(), /Applied/);
       assert.equal((await evaluate(sw, read)).status.revision, revision);
 
-      await evaluate(view, "window.fetch = () => respond({mode:'patch',patch:{bassDb:5},summary:'More bass.',unsupported:[]})");
+      await evaluate(view, "window.fetch = url => url.endsWith('/v2') ? Promise.resolve(new Response(null,{status:404})) : respond({mode:'patch',patch:{bassDb:5},summary:'More bass.',unsupported:[]})");
       await submit();
       await wait(300);
       assert.match(await getFeedback(), /^Applied ✓/);
       assert.equal((await evaluate(sw, read)).status.effects.bassDb, 5);
 
-      await evaluate(view, "window.fetch = () => new Promise(resolve => { window.releaseReply = () => resolve(Response.json({mode:'patch',patch:{bassDb:8},summary:'More bass.',unsupported:[]})); })");
+      await evaluate(view, "window.fetch = () => new Promise(resolve => { window.releaseReply = () => resolve(Response.json({actions:[{control:'bassDb',operation:'set',value:8}],summary:'More bass.',unsupported:[]})); })");
       await submit();
       assert.match(await getFeedback(), /Interpreting/);
       const beforeSwitch = (await evaluate(sw, read)).status;
@@ -338,6 +343,7 @@ try {
       assert.equal((await evaluate(sw, read)).status.revision, beforeSwitch.revision);
       await click('Warm');
       await wait(300);
+      await until(() => evaluate(view, 'typeof window.releaseReply === "function"'), Boolean, 'Pending Gemini response');
       await evaluate(view, 'window.releaseReply()');
       await wait(200);
       assert.equal((await evaluate(sw, read)).status.effects.bassDb, 2);
@@ -362,7 +368,7 @@ try {
         window.fetch = async (url, options) => {
           const data = JSON.parse(options.body);
           window.memoryCalls.push(data);
-          return Response.json({ mode: 'patch', patch: { bassDb: data.localPreferences ? -6 : -4 }, summary: 'Reduced bass.', unsupported: [] });
+          return Response.json({ actions: [{ control: 'bassDb', operation: 'set', value: data.localPreferences ? -6 : -4 }], summary: 'Reduced bass.', unsupported: [] });
         }`);
       assert.equal(await evaluate(view, "document.querySelector('#memory-enabled').checked"), false);
       await memory('enabled');
@@ -522,6 +528,7 @@ try {
   await until(async () => (await evaluate(sw, 'chrome.tabCapture.getCapturedTabs()'))
     .find(tab => tab.tabId === current.session.tabId)?.status, state => state === 'stopped', 'Tab capture released');
   console.log('Local tone, DSP controls, tab switching and Stop checks passed.');
+  if (commands) await checkCommands({ send, evaluate, find, attach, until, url, origin, id, sw, read, startStemHelper, stopStemHelper });
   const tuningSnapshot = tuning ? await checkTuning({ send, evaluate, find, attach, until, url, origin, id, sw, read,
     startStemHelper, stopStemHelper }) : undefined;
   if (reverb) {
@@ -541,7 +548,7 @@ try {
     await evaluate(song, "document.querySelector('#movie_player video').play().catch(() => undefined)");
     await send('Extensions.triggerAction', { id, targetId: songTab });
     const chordsPanel = await attach((await find(t => t.url === origin + '/sidepanel.html', 'chords side panel')).targetId);
-    const openChords = () => evaluate(chordsPanel, "document.querySelector('#chords').open = true");
+    const openChords = () => evaluate(chordsPanel, "document.querySelector('#settings-tab').click(); document.querySelector('#chords').open = true");
     const readChords = () => evaluate(chordsPanel, `({
       status: document.querySelector('#chords-status').textContent,
       current: document.querySelector('#chord-current').textContent,
@@ -549,8 +556,6 @@ try {
       keyboard: Boolean(document.querySelector('.chord-piano')),
       guitar: Boolean(document.querySelector('.chord-guitar')),
     })`);
-    await openChords();
-    await until(readChords, value => value.status === 'Songle · Estimated chords', 'Live Songle timeline', 40);
     async function seek(position, rate = 1) {
       await evaluate(song, `(() => {
         const video = document.querySelector('#movie_player video');
@@ -561,19 +566,22 @@ try {
       const input = document.querySelector('#lyrics-offset'); input.value = ${JSON.stringify(String(offset))};
       input.dispatchEvent(new Event('change'));
     })()`);
+    await openChords();
+    await until(readChords, value => value.status === 'Songle · Estimated chords', 'Live Songle timeline', 40);
+    await setOffset(1.2); // Neutralize the restored recording alignment for known Songle event boundaries.
     await seek(13.5);
     await until(readChords, value => value.current === 'Eb' && value.next === 'Eb/Ab' && value.keyboard && value.guitar, 'Diagrams and next chord');
     await seek(17);
     await until(readChords, value => value.current === 'Eb/Ab', 'Forward chord seek');
     await seek(16, 2);
-    await setOffset(1);
+    await setOffset(2.2);
     await until(readChords, value => value.current === 'Eb', 'Rate-adjusted chord offset');
-    await setOffset(0);
+    await setOffset(1.2);
     await seek(13.5);
     await until(readChords, value => value.current === 'Eb', 'Backward chord seek');
     assert.ok(await evaluate(chordsPanel, "chrome.storage.local.get('songleChordCacheV1').then(values => values.songleChordCacheV1?.PqJNc9KVIZE?.result?.events.length > 20)"));
     await evaluate(chordsPanel, "document.querySelector('#stop').click()");
-    await until(readChords, value => value.status.startsWith('Select a YouTube'), 'Chord status cleared after Stop');
+    await until(readChords, value => value.status.startsWith('Select a playing'), 'Chord status cleared after Stop');
     console.log('Live Songle timeline, diagrams, pause/seek, playback rate, shared offset, cache and Stop passed on its documented YouTube example.');
   }
   if (process.env.MOODSHIFT_LYRICS_TEST) {
@@ -766,7 +774,7 @@ try {
       await evaluate(panelView, 'if (window.unmockedFetch) window.fetch = window.unmockedFetch');
     } else {
       await evaluate(panelView, `window.fetch = () => Promise.resolve(Response.json({
-        mode: 'patch', patch: { reverbMix: 0.28 }, stemMode: 'instrumental',
+        actions: [{ control: 'reverb.amount', operation: 'set', value: 0.28 }, { control: 'mix', operation: 'set', value: 'instrumental' }],
         summary: 'Instrumental with more reverb.', unsupported: [],
       }))`);
     }

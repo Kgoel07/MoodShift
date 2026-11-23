@@ -1,7 +1,5 @@
-import { relevantPreferences } from './shared/preferences';
-import { editLocalPreference, loadLocalPreferences, localPreferencesKey, parseLocalPreferences } from './local-preferences';
-
-const storageKey = 'moodshiftPersonalization';
+import { editLocalPreference, loadLocalPreferences, localPreferencesKey, parseLocalPreferences,
+  personalizationKey as storageKey } from './local-preferences';
 type Settings = { enabled: boolean };
 
 function parseSettings(value: unknown): Settings {
@@ -150,12 +148,5 @@ export function mountPersonalization(root: HTMLElement, onChange: () => void) {
 
   return {
     remember,
-    context(prompt: string) {
-      if (!settings?.enabled) return {};
-      const localPreferences = relevantPreferences(prompt, preferences.map(row => row.text));
-      return {
-        localPreferences: localPreferences.length ? localPreferences : undefined,
-      };
-    },
   };
 }

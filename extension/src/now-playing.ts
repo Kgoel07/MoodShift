@@ -1,6 +1,6 @@
 import { platforms, trackTitle, youtubeArtwork, type SourcePlatform } from './shared/track';
 import type { CaptureStatus } from './shared/types';
-import type { YouTubePlayback } from './shared/lyrics';
+import type { PlayerPlayback } from './shared/lyrics';
 
 const marks: Record<SourcePlatform, string> = {
   youtube: '<rect x="2" y="5" width="20" height="14" rx="4" fill="currentColor"/><path d="m10 9 6 3-6 3z" fill="var(--panel)"/>',
@@ -17,7 +17,7 @@ export function mountNowPlaying() {
   const frame = document.querySelector<HTMLElement>('#track-art')!;
   const icon = document.querySelector<HTMLElement>('#platform-icon')!;
   let status: CaptureStatus = { phase: 'ready' };
-  let playback: YouTubePlayback | null = null;
+  let playback: PlayerPlayback | null = null;
   let imageUrl: string | undefined;
   let platform: SourcePlatform | undefined;
 
@@ -33,8 +33,8 @@ export function mountNowPlaying() {
       frame.dataset.platform = current;
       icon.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22">${marks[current]}</svg>`;
     }
-    const song = session && current === 'youtube' && !playback?.ad ? playback?.song : undefined;
-    const nextImage = song?.title && playback ? youtubeArtwork(playback.videoId) : undefined;
+    const song = session && !playback?.ad ? playback?.song : undefined;
+    const nextImage = song?.title && playback && 'videoId' in playback ? youtubeArtwork(playback.videoId) : undefined;
     if (nextImage !== imageUrl) {
       imageUrl = nextImage;
       artwork.hidden = true;
@@ -61,6 +61,6 @@ export function mountNowPlaying() {
       status = next;
       render();
     },
-    setPlayback(next: YouTubePlayback | null) { playback = next; render(); },
+    setPlayback(next: PlayerPlayback | null) { playback = next; render(); },
   };
 }

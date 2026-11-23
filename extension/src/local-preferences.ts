@@ -1,6 +1,7 @@
-import { installationIdPattern, preferenceLimit, preferenceTextPattern } from './shared/preferences';
+import { installationIdPattern, preferenceLimit, preferenceTextPattern, relevantPreferences } from './shared/preferences';
 
 export const localPreferencesKey = 'moodshiftSoundPreferences';
+export const personalizationKey = 'moodshiftPersonalization';
 const maxPreferences = 30;
 type Preference = { id: string; text: string };
 type Edit = { id?: string; text: string } | { id: string; remove: true };
@@ -25,6 +26,13 @@ export function soundPreferenceText(text: string): string {
 
 export async function loadLocalPreferences(): Promise<Preference[]> {
   return parseLocalPreferences((await chrome.storage.local.get(localPreferencesKey))[localPreferencesKey]);
+}
+
+export async function promptPreferences(prompt: string): Promise<string[] | undefined> {
+  const values = await chrome.storage.local.get([personalizationKey, localPreferencesKey]);
+  if ((values[personalizationKey] as { enabled?: boolean } | undefined)?.enabled !== true) return;
+  const matches = relevantPreferences(prompt, parseLocalPreferences(values[localPreferencesKey]).map(row => row.text));
+  return matches.length ? matches : undefined;
 }
 
 export async function editLocalPreference(edit: Edit): Promise<Preference[]> {

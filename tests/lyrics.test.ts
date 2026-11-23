@@ -115,6 +115,14 @@ describe('LRCLIB matching', () => {
     expect(matchLyrics([record, { ...record, duration: 120.45, syncedLyrics: '[00:12] Different words' }], song))
       .toEqual({ kind: 'synced', lines: parseLrc(record.syncedLyrics) });
   });
+
+  it('prefers the player album and prioritizes the original recording within a close duration match', () => {
+    const original = { ...record, albumName: 'Original Recording', duration: 120.2 };
+    const deluxe = { ...record, albumName: 'Anniversary Deluxe', syncedLyrics: '[00:05] Deluxe opening' };
+    expect(matchLyrics([deluxe, original], song)).toEqual({ kind: 'synced', lines: parseLrc(original.syncedLyrics) });
+    expect(matchLyrics([deluxe, original], { ...song, album: deluxe.albumName }))
+      .toEqual({ kind: 'synced', lines: parseLrc(deluxe.syncedLyrics) });
+  });
 });
 
 describe('LRCLIB requests', () => {

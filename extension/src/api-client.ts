@@ -13,7 +13,7 @@ export async function cloudDemoCode(config: DeploymentConfig = deployment): Prom
   return code;
 }
 
-export async function apiRequest(path: '/api/interpret', body: unknown, signal: AbortSignal,
+export async function apiRequest(path: '/api/interpret' | '/api/interpret/v2', body: unknown, signal: AbortSignal,
   config: DeploymentConfig = deployment): Promise<Response> {
   const code = await cloudDemoCode(config);
   const url = new URL(path, config.apiBaseUrl);

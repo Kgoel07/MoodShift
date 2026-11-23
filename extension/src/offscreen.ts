@@ -2,8 +2,11 @@ import { AudioEngine } from './audio-engine';
 import { AudioFeaturesMeter } from './audio-features';
 import { StemStream } from './stem-stream';
 import { EqSpectrum } from './eq-spectrum';
+import { LiveChordAnalyzer } from './live-chord-analysis';
+import { liveChordPort, type LiveChordSample } from './shared/chords';
+import { playoutDelay } from './playout-timing';
 import { deployment } from './shared/deployment';
-import { changeTuning, readTuning, validateTuning, type TuningSettings } from './shared/tuning';
+import { changeTuning, readTuning, validateTuning, type AudioTiming, type TuningSettings } from './shared/tuning';
 import { applyPatch, neutralEffects, type AudioEffectState } from './shared/effects';
 import { changeReverb, defaultReverb, validateReverb, type ReverbSettings, type ReverbSpeed, type ReverbState } from './shared/reverb';
 import { meterChannel, statusChanged, type AudioMessage, type MeterUpdate, type Reply } from './shared/messages';
@@ -24,6 +27,7 @@ interface LiveCapture {
   stemRequest: number;
   reverb: ReverbState;
   tuning: TuningSettings;
+  chords?: { analyzer: LiveChordAnalyzer; ports: Set<chrome.runtime.Port>; disconnect: () => void };
   speedOwner?: string;
   speedTimer?: ReturnType<typeof setInterval>;
 }
@@ -34,13 +38,40 @@ let pending: Promise<void> = Promise.resolve();
 const meterUpdates = new BroadcastChannel(meterChannel);
 const spectrum = new EqSpectrum(() => Boolean(live && !live.session.muted && live.context.state === 'running'));
 
+function removeChordPort(capture: LiveCapture, port: chrome.runtime.Port): void {
+  const chords = capture.chords;
+  if (!chords) return;
+  chords.ports.delete(port);
+  if (chords.ports.size) return;
+  capture.chords = undefined;
+  chords.disconnect();
+}
+
+chrome.runtime.onConnect.addListener(port => {
+  const capture = live;
+  if (!capture?.engine || port.name !== liveChordPort + capture.session.id
+    || port.sender?.url !== chrome.runtime.getURL('sidepanel.html')) return;
+  if (!capture.chords) {
+    const analyzer = new LiveChordAnalyzer(capture.context);
+    capture.chords = { analyzer, ports: new Set(), disconnect: capture.engine.tapInput(analyzer.node) };
+  }
+  capture.chords.ports.add(port);
+  port.onDisconnect.addListener(() => removeChordPort(capture, port));
+});
+
+function timing(capture: LiveCapture): AudioTiming {
+  const { engine, context, stem, monitor, stemStream } = capture;
+  const pitch = engine?.pitchPlayback ?? { phase: 'bypass', latencySeconds: 0 } as const;
+  const stemSeconds = stem.phase === 'active' && monitor === 'modified' ? stemStream?.playoutDelay ?? deployment.stemDelaySeconds : 0;
+  const processingSeconds = stemSeconds + pitch.latencySeconds;
+  return { sampleRate: context.sampleRate, pitch, stemSeconds, processingSeconds,
+    playoutSeconds: playoutDelay(context.state === 'running', processingSeconds, context.baseLatency, context.outputLatency) };
+}
+
 function read(): CaptureStatus {
   if (live) {
-    const { session, effects, revision, monitor, features, context, stem, reverb, tuning, engine } = live;
-    const pitch = engine?.pitchPlayback ?? { phase: 'bypass', latencySeconds: 0 } as const;
-    const stemSeconds = stem.phase === 'active' && monitor === 'modified' ? deployment.stemDelaySeconds : 0;
-    const audioTiming = { sampleRate: context.sampleRate, pitch, stemSeconds, processingSeconds: stemSeconds + pitch.latencySeconds };
-    return { phase: 'capturing', session, effects, revision, monitor, features, stem, reverb, tuning, audioTiming,
+    const { session, effects, revision, monitor, features, context, stem, reverb, tuning } = live;
+    return { phase: 'capturing', session, effects, revision, monitor, features, stem, reverb, tuning, audioTiming: timing(live),
       outputPaused: context.state !== 'running' };
   }
   return problem ? { phase: 'error', message: problem } : { phase: 'ready' };
@@ -48,9 +79,12 @@ function read(): CaptureStatus {
 
 async function stop(sessionId: string, error?: string): Promise<void> {
   if (live?.session.id !== sessionId) return;
-  const { engine, stream, context, timer, stemStream } = live;
+  const { engine, stream, context, timer, stemStream, chords } = live;
   const capture = live;
   live = undefined;
+  capture.chords = undefined;
+  chords?.disconnect();
+  chords?.ports.forEach(port => port.disconnect());
   spectrum.setSource(undefined);
   const restoring = releaseSpeed(capture);
   if (error) console.warn('MoodShift capture ended', error);
@@ -180,7 +214,17 @@ async function start(session: CaptureSession, streamId: string, tuning: TuningSe
     const meter = new AudioFeaturesMeter(live.engine.analyser, context.sampleRate);
     capture.timer = setInterval(() => {
       capture.features = context.state === 'running' ? meter.sample() : silentFeatures;
-      meterUpdates.postMessage({ sessionId: session.id, features: capture.features } satisfies MeterUpdate);
+      const audioTiming = timing(capture);
+      meterUpdates.postMessage({ sessionId: session.id, features: capture.features, audioTiming } satisfies MeterUpdate);
+      if (capture.chords) {
+        const { analyzer, ports } = capture.chords;
+        const chord = analyzer.sample(!capture.session.muted && !capture.features.isSilent);
+        const capturedAt = (performance.timeOrigin + performance.now()) / 1000 - analyzer.windowCenter;
+        for (const port of ports) {
+          try { port.postMessage({ chord, capturedAt, outputDelay: audioTiming.playoutSeconds } satisfies LiveChordSample); }
+          catch { removeChordPort(capture, port); port.disconnect(); }
+        }
+      }
     }, 250);
   } catch (error) {
     stream?.getTracks().forEach(track => track.stop());
@@ -194,6 +238,7 @@ async function start(session: CaptureSession, streamId: string, tuning: TuningSe
 
 function resetStem(capture: LiveCapture, message?: string): void {
   capture.stemRequest++;
+  capture.revision++;
   capture.engine?.setStemActive(false);
   capture.stemStream?.close(message);
   capture.stemStream = undefined;
@@ -229,6 +274,7 @@ async function selectStem(message: Extract<AudioMessage, { type: 'SET_STEM' }>):
     return { ok: false, message: detail };
   }
   const request = ++capture.stemRequest;
+  const revision = ++capture.revision;
   if (!capture.stemStream) {
     capture.stem = { phase: 'loading', mode };
     const stream = new StemStream(capture.context, engine, () => {
@@ -250,7 +296,7 @@ async function selectStem(message: Extract<AudioMessage, { type: 'SET_STEM' }>):
     if (live !== capture || request !== capture.stemRequest) {
       return { ok: false, message: 'Stem selection changed.' };
     }
-    if (message.baseRevision !== undefined && message.baseRevision !== capture.revision) {
+    if (message.baseRevision !== undefined && revision !== capture.revision) {
       const detail = 'Effects changed while the stem was buffering. Submit again.';
       if (capture.stem.phase !== 'active') resetStem(capture, detail);
       return { ok: false, message: detail };
@@ -309,12 +355,13 @@ chrome.runtime.onMessage.addListener((message: AudioMessage, _sender, sendRespon
           capture.tuning = validateTuning(message.tuning);
           capture.engine.setTuning(capture.tuning);
         }
-        await applyReverb(capture, settings, next, message.reverb !== undefined);
+        await applyReverb(capture, settings, next, message.restartReverbSpeed ?? (message.reverb !== undefined));
       } else if (message.type === 'SET_MONITOR') {
         if (message.baseRevision !== undefined && message.baseRevision !== capture.revision) {
           return { ok: false, message: 'Effects changed before switching the monitor.' };
         }
         if (message.monitor !== 'original' && message.monitor !== 'modified') throw new Error('Invalid monitor mode.');
+        if (capture.monitor !== message.monitor) capture.revision++;
         capture.engine.setMonitor(message.monitor);
         capture.monitor = message.monitor;
       } else {

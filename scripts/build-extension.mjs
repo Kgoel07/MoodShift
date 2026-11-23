@@ -35,7 +35,7 @@ if (config.mode === 'production') {
 await mkdir(outdir, { recursive: true });
 await mkdir(resolve(outdir, 'assets'), { recursive: true });
 await build({
-  entryPoints: ['background', 'offscreen', 'sidepanel', 'domain', 'stem-worker', 'stem-worklet', 'youtube-playback']
+  entryPoints: ['background', 'offscreen', 'sidepanel', 'domain', 'voice', 'stem-worker', 'stem-worklet', 'youtube-playback']
     .map(name => `extension/src/${name}.ts`),
   outdir,
   define: { __MOODSHIFT_DEPLOYMENT__: JSON.stringify(config) },
@@ -51,7 +51,7 @@ await Promise.all([
   config.mode === 'production'
     ? writeFile(resolve(outdir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
     : copyFile(new URL('manifest.json', dir), resolve(outdir, 'manifest.json')),
-  ...['offscreen.html', 'sidepanel.html', 'sidepanel.css', 'domain.html', 'tuning.css'].map(name =>
+  ...['offscreen.html', 'sidepanel.html', 'sidepanel.css', 'domain.html', 'tuning.css', 'voice.html', 'voice.css'].map(name =>
     copyFile(new URL(`src/${name}`, dir), resolve(outdir, name))),
 ]);
 if (config.mode === 'production') console.log(`MoodShift cloud API: ${config.apiBaseUrl}`);

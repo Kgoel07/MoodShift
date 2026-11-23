@@ -1,6 +1,7 @@
-import express, { type ErrorRequestHandler } from 'express';
-import { interpret, ProxyError, type ModelConfig } from './interpret.js';
-import { requestSchema } from './schema.js';
+import express, { type ErrorRequestHandler, type RequestHandler } from 'express';
+import type { ZodType } from 'zod';
+import { interpret, interpretControls, ProxyError, type ModelConfig } from './interpret.js';
+import { controlRequestSchema, requestSchema } from './schema.js';
 import { demoGuard, extensionOrigin, type AccessPolicy } from './access.js';
 
 export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch,
@@ -28,16 +29,19 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch,
   });
 
   app.get('/health', (_req, res) => {
+    res.set('X-MoodShift-Controls', '2');
     res.json({ ok: true, aiConfigured: Boolean(config.apiKey), model: config.model });
   });
   if (policy.mode !== 'local') app.use('/api', demoGuard(policy.token));
 
-  app.post('/api/interpret', express.json({ limit: '8kb', inflate: false }), async (req, res) => {
+  const handleInterpretation = <T extends { localPreferences?: string[] }>(schema: ZodType<T>,
+    run: (request: Omit<T, 'localPreferences'>, config: ModelConfig, fetcher: typeof fetch,
+      signal: AbortSignal, preferences: string[]) => Promise<unknown>): RequestHandler => async (req, res) => {
     if (!req.is('application/json')) {
       res.status(415).json({ error: 'Send application/json.' });
       return;
     }
-    const request = requestSchema.safeParse(req.body);
+    const request = schema.safeParse(req.body);
     if (!request.success) {
       res.status(400).json({ error: 'Provide a 1–500 character prompt, all effect values, and bounded audio features.' });
       return;
@@ -52,14 +56,17 @@ export function createApp(config: ModelConfig, fetcher: typeof fetch = fetch,
     });
     try {
       const { localPreferences = [], ...audioRequest } = request.data;
-      const result = await interpret(audioRequest, config, fetcher, controller.signal, [...new Set(localPreferences)]);
+      const preferences = [...new Set(localPreferences)];
+      const result = await run(audioRequest, config, fetcher, controller.signal, preferences);
       if (!controller.signal.aborted) res.json(result);
     } catch (error) {
       if (controller.signal.aborted) return;
       if (error instanceof ProxyError) res.status(error.status).json({ error: error.message });
       else res.status(500).json({ error: 'The MoodShift proxy could not interpret the request.' });
     }
-  });
+  };
+  app.post('/api/interpret', express.json({ limit: '8kb', inflate: false }), handleInterpretation(requestSchema, interpret));
+  app.post('/api/interpret/v2', express.json({ limit: '12kb', inflate: false }), handleInterpretation(controlRequestSchema, interpretControls));
 
   const inputErrors: ErrorRequestHandler = (error, _req, res, _next) => {
     const status = error.status === 413 ? 413 : error.status === 415 ? 415 : 400;

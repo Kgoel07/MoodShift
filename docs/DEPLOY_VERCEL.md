@@ -2,6 +2,15 @@
 
 The repository root is the Vercel project. Its Express entry point exports the app without opening a port. The Chrome extension is built and loaded separately. The AWS worker has its own deployment.
 
+## Upgrade an existing API to command version 2
+
+1. In the project dashboard, check **Settings → Environments → Production → Branch Tracking** before pushing code. A push to the configured production branch can publish automatically. [Vercel Git deployments](https://vercel.com/docs/git)
+2. After confirming the intended branch is a preview branch, push it and open the resulting deployment under **Deployments**. You can also create a preview deployment from the chosen Git ref. Use the existing Preview environment variables for Gemini, permitted extension origins, and demo access. [Vercel deploying documentation](https://vercel.com/docs/deployments)
+3. Request `/health` on the test deployment. A version 2 backend returns HTTP 200 and the header `X-MoodShift-Controls: 2`. Once you have verified the revision and want to release it, choose **Promote to Production** on that deployment. [Vercel promotion instructions](https://vercel.com/docs/deployments/promote-preview-to-production)
+4. Rebuild the production extension with `npm run build:extension -- --mode production` and reload the existing installation in Chrome. Check the production alias used in `extension/.env.local`, capture a playing tab, and try “Lower pitch by two semitones and add Concert Hall reverb.”
+
+The new extension calls `POST /api/interpret/v2` for typed and spoken commands. A `404` falls back to the existing `/api/interpret` endpoint for the previous DSP and stem actions. Following the preview and promotion workflow allows the existing production branch to stay where it is.
+
 ## Prepare the extension ID and credentials
 
 1. Build an unpacked production copy on the computer you will use for the demo. Use the final domains if you know them, or use the example placeholders to obtain the Chrome ID. Keep using this same unpacked directory and Chrome profile.

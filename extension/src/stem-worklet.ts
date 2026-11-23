@@ -112,7 +112,7 @@ class StemAudio extends AudioWorkletProcessor {
       output[3][index] = this.dry[offset + 1] - vocalR;
       if (!this.signaled) {
         this.signaled = true;
-        this.channel?.postMessage({ type: 'active' } satisfies PCMMessage);
+        this.channel?.postMessage({ type: 'active', queuedFrames: position - playback } satisfies PCMMessage);
       }
     }
     return true;

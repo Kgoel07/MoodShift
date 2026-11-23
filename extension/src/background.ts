@@ -1,4 +1,4 @@
-import { statusChanged, toAudio, type Reply, type StemCodeReply, type StemCodeRequest, type WorkerMessage } from './shared/messages';
+import { statusChanged, toAudio, type AudioCommand, type Reply, type StemCodeReply, type StemCodeRequest, type WorkerMessage } from './shared/messages';
 import type { CaptureStatus, SourceTab } from './shared/types';
 import { usesCloudStems } from './shared/deployment';
 import { cloudDemoCode } from './api-client';
@@ -6,6 +6,10 @@ import { installLyricsLookup } from './lyrics-provider';
 import { installChordLookup } from './chords-provider';
 import { platformFor } from './shared/track';
 import { changeTuning, readTuning, tuningKey } from './shared/tuning';
+import { controlState, loadControlPresets, loadDisplay } from './control-state';
+import { applyControls, changeDisplay, isDisplayControl, parseControlActions } from './shared/controls';
+import { storeDisplay } from './shared/display-settings';
+import { effectKeys } from './shared/effects';
 
 installLyricsLookup();
 installChordLookup();
@@ -15,6 +19,24 @@ let creating: Promise<void> | undefined;
 let operations: Promise<void> = Promise.resolve();
 let starting: SourceTab | undefined;
 let failure: string | undefined;
+const voiceUrl = chrome.runtime.getURL('voice.html');
+let openingVoice: Promise<void> | undefined;
+
+function openVoice(): Promise<void> {
+  openingVoice ??= (async () => {
+    const [window] = await chrome.runtime.getContexts({ documentUrls: [voiceUrl] });
+    if (window && window.windowId >= 0) {
+      try { await chrome.windows.update(window.windowId, { focused: true }); return; }
+      catch { /* The previous window closed after the lookup. */ }
+    }
+    await chrome.windows.create({ url: voiceUrl, type: 'popup', width: 370, height: 335, focused: true });
+  })().finally(() => { openingVoice = undefined; });
+  return openingVoice;
+}
+
+chrome.commands.onCommand.addListener(command => {
+  if (command === 'voice-command') void openVoice().catch(() => console.warn('MoodShift could not open voice commands.'));
+});
 
 async function hasOffscreen(): Promise<boolean> {
   const contexts = await chrome.runtime.getContexts({
@@ -79,6 +101,96 @@ async function stop(sessionId: string): Promise<CaptureStatus> {
   if (!reply.ok) throw new Error(reply.message);
   await remember(reply.status);
   return reply.status;
+}
+
+type AudioEdit = Extract<AudioCommand, { type: 'APPLY_EFFECTS' | 'SET_TUNING' | 'SET_MONITOR' | 'SET_REVERB' }>;
+async function updateAudio(message: AudioEdit): Promise<Reply> {
+  const reply = await toAudio(message);
+  if (reply.ok) {
+    try {
+      if (reply.status.tuning && (message.type === 'SET_TUNING' || (message.type === 'APPLY_EFFECTS' && message.tuning))) {
+        await chrome.storage.local.set({ [tuningKey]: reply.status.tuning });
+      }
+    } finally { statusChanged(); }
+  }
+  return reply;
+}
+
+const same = (before: unknown, after: unknown) => JSON.stringify(before) === JSON.stringify(after);
+type ControlCommand = Extract<WorkerMessage, { type: 'APPLY_CONTROLS' }>;
+const staleCommand = 'Settings changed while Gemini was working. Try the command again.';
+
+async function dispatchControls(message: ControlCommand): Promise<Reply> {
+  const prepared = await queue(async () => {
+    const actions = parseControlActions(message.actions);
+    const [capture, display, saved] = await Promise.all([audioStatus(), loadDisplay(), loadControlPresets()]);
+    if (capture.phase !== 'capturing' || capture.session.id !== message.sessionId || capture.revision !== message.baseRevision
+      || (actions.some(action => isDisplayControl(action.control)) && !same(display, message.expectedDisplay))) throw new Error(staleCommand);
+    const before = controlState(capture, display);
+    const plan = applyControls(before, actions, saved);
+    const patch = Object.fromEntries(effectKeys.filter(key => before.effects[key] !== plan.effects[key]).map(key => [key, plan.effects[key]]));
+    const reverbChanged = !same(before.reverb, plan.reverb);
+    const pitchChanged = !same(before.tuning.pitch, plan.tuning.pitch);
+    const eqChanged = !same(before.tuning.eq, plan.tuning.eq);
+    const restartReverbSpeed = actions.some(action => action.control === 'reverb.preset' || action.control === 'preset.saved'
+      || (action.control === 'reverb.enabled' && action.value === true));
+    const displayPatch = storeDisplay(plan.display, display);
+    const anyEffects = Object.keys(patch).length > 0 || reverbChanged || restartReverbSpeed;
+    let current = capture;
+    if (anyEffects || pitchChanged || eqChanged) {
+      const reply = await updateAudio({ type: 'APPLY_EFFECTS', sessionId: message.sessionId, baseRevision: capture.revision, patch,
+        ...(pitchChanged || eqChanged ? { tuning: plan.tuning } : {}),
+        ...(reverbChanged || restartReverbSpeed ? { reverb: plan.reverb, restartReverbSpeed } : {}),
+      });
+      if (!reply.ok) throw new Error(reply.message);
+      if (reply.status.phase !== 'capturing' || reply.status.session.id !== message.sessionId) throw new Error(staleCommand);
+      current = reply.status;
+    }
+    const displayChanged = Object.keys(displayPatch).length > 0;
+    if (displayChanged) await chrome.storage.local.set(displayPatch);
+    return { current, plan, pitchChanged, applied: anyEffects || eqChanged || displayChanged };
+  });
+
+  let { current, applied } = prepared;
+  const { plan, pitchChanged } = prepared;
+  const notices: string[] = [];
+  const sessionId = message.sessionId;
+  if (plan.selectStem && (current.stem.mode !== plan.stemMode || current.stem.phase !== (plan.stemMode === 'full' ? 'idle' : 'active'))) {
+    // A stem may buffer for several seconds. Keep the capture queue available to Stop and manual controls.
+    const reply = await toAudio({ type: 'SET_STEM', sessionId, mode: plan.stemMode, baseRevision: current.revision });
+    if (reply.ok && reply.status.phase === 'capturing' && reply.status.session.id === sessionId) {
+      current = reply.status;
+      applied = true;
+    } else {
+      notices.push('The separated mix could not be enabled.');
+      if (pitchChanged && current.audioTiming?.pitch.phase === 'starting') {
+        const next = await audioStatus();
+        if (next.phase === 'capturing' && next.session.id === sessionId && same(next.tuning?.pitch, plan.tuning.pitch)) current = next;
+      }
+    }
+  }
+  if (current.monitor !== plan.monitor && !notices.length) {
+    const reply = await queue(() => updateAudio({ type: 'SET_MONITOR', sessionId, monitor: plan.monitor, baseRevision: current.revision }));
+    if (!reply.ok || reply.status.phase !== 'capturing' || reply.status.session.id !== sessionId) throw new Error(staleCommand);
+    current = reply.status;
+    applied = true;
+  }
+  if (pitchChanged && plan.tuning.pitch.enabled && plan.tuning.pitch.semitones !== 0) {
+    const until = Date.now() + 4000;
+    while (current.audioTiming?.pitch.phase === 'starting' && Date.now() < until) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const next = await audioStatus();
+      if (next.phase !== 'capturing' || next.session.id !== sessionId || !same(next.tuning?.pitch, plan.tuning.pitch)) throw new Error(staleCommand);
+      current = next;
+    }
+    if (current.audioTiming?.pitch.phase === 'active') applied = true;
+    else notices.push('Pitch could not start.');
+  } else applied ||= pitchChanged;
+  if (prepared.applied && plan.reverb.preset === 'slowed' && plan.effects.reverbMix > 0 && current.reverb?.speed.state === 'unavailable') {
+    notices.push('Playback slowing is unavailable on this tab.');
+  }
+  statusChanged();
+  return { ok: true, status: current, applied, notices };
 }
 
 async function select(source: SourceTab): Promise<void> {
@@ -166,10 +278,11 @@ chrome.runtime.onMessage.addListener((message: WorkerMessage | StemCodeRequest |
       if (capture?.id !== message.sessionId) return { state: 'unavailable', message: 'Reverb active. The captured tab changed.' };
       let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
-        return await Promise.race([
+        const speed = await Promise.race([
           chrome.tabs.sendMessage(capture.tabId, { type: 'REVERB_PLAYBACK', owner: message.owner, enabled: message.enabled }, { frameId: 0 }),
           new Promise(resolve => { timeout = setTimeout(() => resolve({ state: 'unavailable', message: 'Reverb active. The player did not answer the speed request.' }), 1200); }),
         ]);
+        return speed ?? { state: 'unavailable', message: 'Reverb active. Slowing is supported on YouTube only.' };
       } finally { clearTimeout(timeout); }
     })().then(sendResponse, () => sendResponse({ state: 'unavailable', message: 'Reverb active. Slowing is supported on YouTube only.' }));
     return true;
@@ -193,6 +306,16 @@ chrome.runtime.onMessage.addListener((message: WorkerMessage | StemCodeRequest |
     void toAudio(message).then(sendResponse, () => sendResponse({ ok: false, message: 'Select an audio tab with the MoodShift icon.' }));
     return true;
   }
+  if (message.type === 'APPLY_CONTROLS') {
+    void dispatchControls(message).then(sendResponse, error => sendResponse({ ok: false, message: String(error.message ?? error) } satisfies Reply));
+    return true;
+  }
+  if (message.type === 'OPEN_VOICE') {
+    if (sender.url !== chrome.runtime.getURL('sidepanel.html')) return;
+    void openVoice().then(status).then(current => sendResponse({ ok: true, status: current } satisfies Reply),
+      () => sendResponse({ ok: false, message: 'Couldn’t open voice commands.' } satisfies Reply));
+    return true;
+  }
   const operation: Promise<Reply> = message.type === 'GET_STATUS'
     ? status().then(current => ({ ok: true, status: current }))
     : queue(async () => {
@@ -200,6 +323,12 @@ chrome.runtime.onMessage.addListener((message: WorkerMessage | StemCodeRequest |
         const current = await stop(message.sessionId);
         statusChanged();
         return { ok: true, status: current.phase === 'capturing' ? current : { ...current, tuning: await storedTuning() } };
+      }
+      if (message.type === 'SET_DISPLAY') {
+        const previous = await loadDisplay();
+        const patch = storeDisplay(changeDisplay(previous, message.action), previous);
+        if (Object.keys(patch).length) await chrome.storage.local.set(patch);
+        return { ok: true, status: await status() };
       }
       if (message.type === 'SET_TUNING' && message.sessionId === undefined) {
         const current = await status();
@@ -214,15 +343,7 @@ chrome.runtime.onMessage.addListener((message: WorkerMessage | StemCodeRequest |
         return { ok: false, message: 'Unknown audio command.' };
       }
       if (!await hasOffscreen()) return { ok: false, message: 'Select an audio tab with the MoodShift icon.' };
-      const reply = await toAudio(message);
-      if (reply.ok) {
-        try {
-          if (reply.status.tuning && (message.type === 'SET_TUNING' || (message.type === 'APPLY_EFFECTS' && message.tuning))) {
-            await chrome.storage.local.set({ [tuningKey]: reply.status.tuning });
-          }
-        } finally { statusChanged(); }
-      }
-      return reply;
+      return updateAudio(message);
     });
   void operation.then(
     sendResponse,

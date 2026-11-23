@@ -31,13 +31,23 @@ Open **Settings → Reverb** and choose **Dreamy Reverb**, **Concert Hall**, or 
 
 Slowed + Reverb uses 85% of the previous playback speed on supported YouTube watch pages and restores it when disabled, stopped, or switched to another source. Reload an already-open YouTube page after updating the extension. Other sources keep the reverb and explicitly report that slowing is unavailable. Reverb also applies in Original; turn reverb off for a dry comparison. [Controls, limitations, implementation and Chrome tests](docs/REVERB_AUDIO_EFFECTS.md)
 
-## Synchronized YouTube lyrics
+## Text and voice commands
 
-Build or reload MoodShift, then reload the YouTube watch page so Chrome injects the new content script. Start a song and click the MoodShift icon on that tab. The **Lyrics** section uses the selected player’s position, pause state and playback rate. It follows the active line through seeks and YouTube’s in-tab video changes. Scroll the lyrics at any time and re-enable **Follow playback** to return to the active line.
+1. Start music, then click MoodShift on the playing tab. Type a request such as “Lower pitch by two semitones and add Concert Hall reverb.” Gemini can also adjust EQ bands or exact frequencies, bypass effects, switch mixes, apply presets, and update Home and lyrics display preferences. “Reset the whole audio mix” returns the audio controls to defaults.
+2. Press **Ctrl+Shift+Y** on Windows or macOS to open the compact voice window, or click the microphone button beside **Apply**. In Chrome, open `chrome://extensions/shortcuts` to change the binding or assign one if Chrome reports a conflict.
+3. Click **Listen**, allow the microphone if Chrome prompts, and say one command. The window shows the transcript and confirms the result after MoodShift applies it. Use **Cancel** or Escape while listening or interpreting. Closing the window leaves tab playback running.
 
-Edit **Song Title** and **Artist** and click **Search lyrics** if YouTube identifies the song incorrectly. MoodShift looks for matching title and artist and checks that the recording’s duration is within two seconds. It shows plain lyrics when an otherwise matching record has no timing. Different edits, live performances, and ambiguous results may have no verified match. [LRCLIB API](https://lrclib.net/docs)
+Voice uses Chrome’s Web Speech API with the default microphone and browser language. Chrome may process the microphone audio using its speech service. MoodShift passes the recognized text to the same Gemini endpoint as a typed command. Each request includes the current settings, coarse signal metrics, and available preset names. Saved sound preferences are included only when opted in. [Chrome Commands API](https://developer.chrome.com/docs/extensions/reference/api/commands) · [Web Speech API](https://webaudio.github.io/web-speech-api/)
 
-**Lyric offset** starts at `0` and applies to both lyrics and chord highlights. Use a positive value to delay them and a negative value to advance them. With delayed stem playback, try `+2.8` seconds and adjust by ear. Pitch’s additional latency is applied automatically. The offset persists locally.
+The latest local proxy supports the full command registry. A cloud installation needs the matching `/api/interpret/v2` backend for the new controls. Older backends still support their original DSP and stem prompt contract. [Vercel upgrade steps](docs/DEPLOY_VERCEL.md#upgrade-an-existing-api-to-command-version-2)
+
+## Synchronized lyrics
+
+Build or reload MoodShift, start a song, and click the extension icon on that tab. The **Lyrics** section follows the selected player's position, pause state, and rate. YouTube watch pages, YouTube Music, Spotify Web, SoundCloud, and ordinary browser players can supply metadata or playback clocks. On ordinary players, MoodShift uses information such as Media Session or track metadata when available. Scroll the lyrics at any time and re-enable **Follow playback** to return to the active line.
+
+Edit **Song Title** and **Artist** and click **Search lyrics** if the player identifies the song incorrectly. MoodShift looks for matching title and artist within two seconds of the recording’s duration. It prefers the reported album and ranks original releases ahead of close reissues. It can show plain lyrics or fall back to available timed captions on the page. Tracks with equally plausible conflicting recordings can still require a correction. [LRCLIB API](https://lrclib.net/docs)
+
+**Lyric offset** starts at `0` and applies to lyrics and Songle highlights. MoodShift accounts for the audio device, active stem buffer, and pitch latency. Use positive values to delay the display and negative values to advance it. If you previously entered the full stem delay manually, start at `0` after this update and adjust by ear. The offset persists locally.
 
 Lyrics work without Gemini or the stem helper. MoodShift sends only the song title and artist to LRCLIB. The extension caches recent lookup results and song corrections for the current Chrome session.
 
@@ -45,13 +55,15 @@ To smoke-test in Chrome, open Jonathan Coulton’s “Code Monkey,” click Mood
 
 To repeat the automated Chrome check after building, run `$env:MOODSHIFT_LYRICS_TEST='1'; node tests/chrome-smoke.mjs` in PowerShell. Add `$env:MOODSHIFT_LYRICS_STEMS='1'` to test an active stem alongside lyrics with the optional Windows helper.
 
-## Synchronized YouTube chords
+## Chords
 
 1. Open the YouTube watch page used in the Songle API example, start playback, and click MoodShift on that tab. Open **Chords**. Wait for **Songle · Estimated chords**. [YouTube example](https://www.youtube.com/watch?v=PqJNc9KVIZE)
 2. At about 13.5 seconds, look for **Eb**, then **Eb/Ab** under **Next**. Pause and seek to 17 seconds, then seek backward. Click a chord in the progression to inspect its guitar and piano diagrams. Click it again to follow the current chord. Supported diagrams are based on local tables.
 3. Change the YouTube rate and adjust **Lyric offset (s)** in **Lyrics** to change both highlights. Switch videos or click **Stop processing** to clear the current chord.
 
 MoodShift sends the exact YouTube watch URL to Songle when you open **Chords**. It caches successful results locally for up to seven days and keeps up to 16 videos. Songle covers registered recordings. A missing recording has no progression, and an outage shows a retry control. The integration is for noncommercial use and the original video plays directly from YouTube. [Songle chord API](https://widget.songle.jp/docs/v1?lang=en) · [Songle Widget terms](https://widget.songle.jp/docs/terms-of-use) · [Songle terms](https://api.songle.jp/terms_of_use.pdf)
+
+On other captured tabs, opening **Settings → Chords** starts local major and minor chord estimation from the captured music. It pauses when you leave the Chords view. Estimates are limited to recognizable triads and depend on the audio Chrome can capture. Site sign-in, player changes, and protected audio can affect platform support.
 
 ## My Presets
 
@@ -151,6 +163,8 @@ After building, run `node tests/chrome-smoke.mjs` with current desktop Chrome in
 Set `MOODSHIFT_CHORDS_TEST=1` to exercise the live Songle timeline, `MOODSHIFT_PRESETS_TEST=1` to verify exact restoration across a Chrome restart, and `MOODSHIFT_MEMORY_TEST=1` to exercise local Sound Preferences with mocked Gemini responses. If another MoodShift session is using the stem helper, set `MOODSHIFT_STEM_TEST_PORT` to a free port such as `18788`. The test uses a disposable copy of the bundled extension and starts a separate helper on that port.
 
 Set `$env:MOODSHIFT_TUNING_TEST='1'` before running `node tests/chrome-smoke.mjs` to measure stereo pitch and EQ response in Chrome, exercise Domain Expansion during capture, and verify persistence after browser restart. `$env:MOODSHIFT_TUNING_SOAK='120'` adds two minutes of playback with the panel closed. To also check routing through the stem buffer with the test PCM worker, set `$env:MOODSHIFT_REVERB_STEMS='1'` and `$env:MOODSHIFT_STEM_TEST_PORT='9191'` with the Python dependencies from the optional stem setup installed.
+
+Set `$env:MOODSHIFT_COMMAND_TEST='1'` for Chrome's non-YouTube player, command dispatcher, and simulated voice recognition checks. Add `$env:MOODSHIFT_LIVE_COMMAND_TEST='1'` to use a running local Gemini proxy for one command. The proxy must allow the disposable extension origin if a local origin allowlist is configured.
 
 ## Private cloud demo
 

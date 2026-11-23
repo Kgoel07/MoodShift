@@ -1,4 +1,4 @@
-import { effectSpecs } from './effects';
+import { effectSpecs } from './effects.js';
 
 export const reverbPresets = {
   dreamy: { label: '🌙 Dreamy Reverb', amount: 0.28, duration: 2.4, preDelay: 0.012, toneHz: 3800 },
