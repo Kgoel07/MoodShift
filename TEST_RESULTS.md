@@ -97,3 +97,27 @@ Cloud-build and deployment preparation checks are recorded in [CLOUD_DEPLOY_STAT
 | Preferences and saved presets in Chrome | PASS (automated) | Local saves, edits, deletions, and opt-out. Preferences, opt-out, and exact audio presets persisted across Chrome restart. Chrome exercised both builds with mocked Gemini and Supermemory. |
 | Active stem in production Chrome with the laptop helper | PASS (automated on retry) | Both stem outputs produced PCM from the local fixture. The active Vocals session survived Home and Advanced navigation on both runs. The first run reported the stem unavailable after pausing. The standalone rerun passed pause/resume, A/B, tab switch, reconnection, and Stop. |
 | Live YouTube listening and live providers on this revision | NOT RUN | In desktop Chrome, open Advanced while playing a YouTube track, try the lyric offset and chord diagrams, and switch tabs while applying a preset and an active stem. On the updated backend, try a broad Gemini prompt with a local preference, then give a conflicting explicit instruction. Check live Supermemory only with a configured private owner or local backend. |
+
+## Local reverb audio effects — November 22, 2026
+
+Branch `feature/reverb-audio-effects` starts directly at `feature/advanced-ui-local-memory` commit `34c01013058d00a49dd94f40a3903d99a62d25dd`. No cancelled mask source or commits were used; existing untracked mask files were left untouched.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Typecheck | PASS (automated) | `npm run typecheck`. |
+| Development and production extension builds | PASS (automated) | Both standard build commands passed; production output is `extension/dist-cloud`. |
+| Full JavaScript suite | PASS (automated) | 112 tests across 12 files, including five new reverb/lease tests and a saved-preset compatibility test. |
+| Existing Python stem regressions | PASS (automated) | Nine tests; no GPU model execution or benchmarking. |
+| Real Chrome offline audio rendering | PASS (automated) | Chrome 157.0.8103.80 rendered actual ConvolverNodes. Disabled reverb reproduced the impulse at the same sample with maximum error 2.98e-9. Dreamy/Hall/Slowed tail energies were 0.007168/0.006144/0.008704 for a 0.2 impulse. A 0.4-second response had no late tail after two seconds; a four-second response did. These are signal checks, not listening ratings. |
+| Local captured audio without a backend | PASS (automated) | Chrome captured the generated WAV fixture and, in the final run, the existing local STAY MP3. All presets, amount, duration, enable/disable, Original/Modified, pause/resume, panel closure/reopening and Stop passed. A tap at the actual output measured RMS 0.003731 while captured-input RMS was zero after pause, verifying a real reverb tail in the extension pipeline. No Gemini requests; one AudioContext per capture; no convolver before enable; wet nodes disconnected after disable. |
+| My Presets | PASS (automated) | Customized amount/duration/style saved to local storage, another preset applied, and the saved settings restored through an ACK. Legacy records remain valid. |
+| Instrumental/Vocals/Full Mix with reverb | PASS (automated with a protocol fixture) | The real stem worker, transport and AudioWorklet path used an isolated loopback test server emitting half-gain vocal PCM. Switching all three modes preserved reverb settings. This does not verify actual AI source-separation quality. |
+| Live YouTube slowdown and restoration | PASS (automated) | On the supplied STAY video, prior rate 1.25× became 1.0625×. Renewal and panel closure preserved it. Changing preset, disabling reverb, Stop, and switching capture back to the local tab restored 1.25×. The new source started neutral and Stop released it. |
+| Unsupported-source slowdown | PASS (automated) | Local playback retained reverb and explicitly reported YouTube-only speed support. No simulated slowdown. |
+| User override, unavailable player and crashed-extension lease expiry | PASS (unit tests) | Explicit player speed changes are preserved; refused/unsupported rate changes do not claim slowing; a seven-second expired lease restores the original rate. |
+| Human listening, perceived clicks, physical latency and long-session GPU separation with reverb | NOT RUN | Listen to each preset, adjust intensity/duration during music, and compare Original with reverb enabled/disabled. Start the actual worker separately for a sustained Vocals/Instrumental listening check. |
+| macOS and speed control outside YouTube | NOT RUN / unsupported | macOS was unavailable. Other sources keep reverb but have no slowdown integration. |
+
+The first browser attempts exposed test-harness issues with repeated CDP variable declarations, loading a reopened panel, activating the source before triggering its toolbar action, and sending Stop through the real panel. These were corrected; the final full integration run exited successfully. No product failures were suppressed.
+
+Commands, file inventory, architecture, limits and manual steps are in [Reverb audio effects](docs/REVERB_AUDIO_EFFECTS.md). The existing separator model, configuration and buffer lengths are unchanged. No GPU benchmark, cloud deployment or additional dependency was introduced.

@@ -173,6 +173,10 @@ fieldset label {
 }
 fieldset output { color: var(--muted); font-variant-numeric: tabular-nums; }
 fieldset input { grid-column: 1 / -1; width: 100%; margin: 3px 0 2px; accent-color: var(--accent); }
+#audio-effects { margin-top: 0; }
+#audio-effects .reverb-enable { display: flex; gap: 7px; }
+#audio-effects input[type="checkbox"] { width: auto; margin: 0; }
+#reverb-preset { grid-column: 1 / -1; width: 100%; margin-top: 4px; padding: 5px 6px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
 footer { margin-top: 14px; }
 #stop { color: #f0b8b5; font-size: 12px; }
 

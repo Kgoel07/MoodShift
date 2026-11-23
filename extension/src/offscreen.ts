@@ -2,6 +2,7 @@ import { AudioEngine } from './audio-engine';
 import { AudioFeaturesMeter } from './audio-features';
 import { StemStream } from './stem-stream';
 import { applyPatch, neutralEffects, type AudioEffectState } from './shared/effects';
+import { changeReverb, defaultReverb, validateReverb, type ReverbSettings, type ReverbSpeed, type ReverbState } from './shared/reverb';
 import { meterChannel, statusChanged, type AudioMessage, type MeterUpdate, type Reply } from './shared/messages';
 import { silentFeatures, type AudioFeatures, type CaptureSession, type CaptureStatus, type MonitorMode, type StemStatus } from './shared/types';
 
@@ -18,6 +19,9 @@ interface LiveCapture {
   stem: StemStatus;
   stemStream?: StemStream;
   stemRequest: number;
+  reverb: ReverbState;
+  speedOwner?: string;
+  speedTimer?: ReturnType<typeof setInterval>;
 }
 
 let live: LiveCapture | undefined;
@@ -27,8 +31,8 @@ const meterUpdates = new BroadcastChannel(meterChannel);
 
 function read(): CaptureStatus {
   if (live) {
-    const { session, effects, revision, monitor, features, context, stem } = live;
-    return { phase: 'capturing', session, effects, revision, monitor, features, stem, outputPaused: context.state !== 'running' };
+    const { session, effects, revision, monitor, features, context, stem, reverb } = live;
+    return { phase: 'capturing', session, effects, revision, monitor, features, stem, reverb, outputPaused: context.state !== 'running' };
   }
   return problem ? { phase: 'error', message: problem } : { phase: 'ready' };
 }
@@ -36,13 +40,57 @@ function read(): CaptureStatus {
 async function stop(sessionId: string, error?: string): Promise<void> {
   if (live?.session.id !== sessionId) return;
   const { engine, stream, context, timer, stemStream } = live;
+  const capture = live;
   live = undefined;
+  const restoring = releaseSpeed(capture);
   problem = error;
   clearInterval(timer);
   stemStream?.close();
   engine?.disconnect();
   stream.getTracks().forEach(track => track.stop());
   if (context.state !== 'closed') await context.close();
+  await restoring;
+}
+
+async function releaseSpeed(capture: LiveCapture): Promise<void> {
+  clearInterval(capture.speedTimer); capture.speedTimer = undefined;
+  const owner = capture.speedOwner; capture.speedOwner = undefined;
+  capture.reverb.speed = { state: 'idle' };
+  if (owner) await chrome.runtime.sendMessage({ target: 'worker', type: 'SYNC_REVERB_RATE',
+    sessionId: capture.session.id, owner, enabled: false }).catch(() => undefined);
+}
+
+async function syncSpeed(capture: LiveCapture, restart = false): Promise<void> {
+  if (capture.effects.reverbMix === 0 || capture.reverb.preset !== 'slowed') { await releaseSpeed(capture); return; }
+  if (restart) await releaseSpeed(capture);
+  if (capture.speedOwner) return;
+  const owner = capture.speedOwner = crypto.randomUUID();
+  const renew = async () => {
+    let speed: ReverbSpeed;
+    try {
+      speed = await chrome.runtime.sendMessage({ target: 'worker', type: 'SYNC_REVERB_RATE',
+        sessionId: capture.session.id, owner, enabled: true });
+      if (!speed || !['active', 'unavailable'].includes(speed.state)
+        || (speed.state === 'active' && (typeof speed.rate !== 'number' || !Number.isFinite(speed.rate) || speed.rate <= 0))) throw new Error('Invalid speed acknowledgment.');
+    } catch { speed = { state: 'unavailable', message: 'Reverb active. Playback slowing is unavailable.' }; }
+    if (live !== capture || capture.speedOwner !== owner) return;
+    capture.reverb.speed = speed;
+    if (speed.state !== 'active') { clearInterval(capture.speedTimer); capture.speedTimer = undefined; }
+    statusChanged();
+  };
+  await renew();
+  if (live === capture && capture.speedOwner === owner && capture.reverb.speed.state === 'active') {
+    capture.speedTimer = setInterval(() => void renew(), 2000);
+  }
+}
+
+async function applyReverb(capture: LiveCapture, settings: ReverbSettings, effects: AudioEffectState, restart = false): Promise<void> {
+  capture.engine!.setReverb(settings);
+  capture.engine!.setEffects(effects);
+  capture.effects = effects;
+  capture.reverb = { ...settings, lastAmount: effects.reverbMix || settings.lastAmount, speed: capture.reverb.speed };
+  capture.revision++;
+  await syncSpeed(capture, restart);
 }
 
 function queue<T>(work: () => Promise<T>): Promise<T> {
@@ -92,6 +140,7 @@ async function start(session: CaptureSession, streamId: string): Promise<void> {
     const capture: LiveCapture = {
       session, stream, context, effects: { ...neutralEffects }, monitor: 'modified',
       revision: 0, features: silentFeatures, stem: { phase: 'idle', mode: 'full' }, stemRequest: 0,
+      reverb: { ...defaultReverb, speed: { state: 'idle' } },
     };
     live = capture;
     live.engine = new AudioEngine(context, stream);
@@ -221,19 +270,22 @@ chrome.runtime.onMessage.addListener((message: AudioMessage, _sender, sendRespon
   void queue(async (): Promise<Reply> => {
     if (message.type === 'START') await start(message.session, message.streamId);
     if (message.type === 'STOP') await stop(message.sessionId);
-    if (message.type === 'APPLY_EFFECTS' || message.type === 'SET_MONITOR' || message.type === 'UPDATE_TAB') {
+    if (message.type === 'APPLY_EFFECTS' || message.type === 'SET_MONITOR' || message.type === 'UPDATE_TAB' || message.type === 'SET_REVERB') {
       const capture = live;
       if (!capture?.engine || capture.session.id !== message.sessionId) {
         return { ok: false, message: 'The selected tab changed. Try again on the current source.' };
       }
-      if (message.type === 'APPLY_EFFECTS') {
+      if (message.type === 'SET_REVERB') {
+        const { preset, duration, lastAmount } = capture.reverb;
+        const next = changeReverb({ preset, duration, lastAmount }, capture.effects.reverbMix, message.patch);
+        await applyReverb(capture, next.settings, applyPatch(capture.effects, { reverbMix: next.mix }), message.patch.preset !== undefined || message.patch.enabled === true);
+      } else if (message.type === 'APPLY_EFFECTS') {
         if (message.baseRevision !== undefined && message.baseRevision !== capture.revision) {
           return { ok: false, message: 'Effects changed while Gemini was interpreting. Submit again to use the current settings.' };
         }
         const next = applyPatch(capture.effects, message.patch);
-        capture.engine.setEffects(next);
-        capture.effects = next;
-        capture.revision++;
+        const { preset, duration, lastAmount } = capture.reverb;
+        await applyReverb(capture, message.reverb ? validateReverb(message.reverb) : { preset, duration, lastAmount }, next, message.reverb !== undefined);
       } else if (message.type === 'SET_MONITOR') {
         if (message.baseRevision !== undefined && message.baseRevision !== capture.revision) {
           return { ok: false, message: 'Effects changed before switching the monitor.' };

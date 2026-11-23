@@ -32,6 +32,21 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('local saved presets', () => {
+  it('round-trips optional reverb settings while leaving legacy presets valid', async () => {
+    await save();
+    const legacy = (await listPresets()).presets[0];
+    expect(validatePreset(legacy).reverb).toBeUndefined();
+    await editPreset({ type: 'save', name: 'Concert', capture: { ...capture,
+      reverb: { preset: 'hall', duration: 3.1, lastAmount: 0.22, speed: { state: 'idle' } } } });
+    const saved = (await listPresets()).presets.find(row => row.name === 'Concert')!;
+    expect(saved.reverb).toEqual({ preset: 'hall', duration: 3.1, lastAmount: 0.22 });
+    expect((await listPresets()).presets[0]).toEqual(legacy);
+    const send = vi.fn<(message: WorkerCommand) => Promise<Reply>>().mockResolvedValue({ ok: true, status: {
+      ...capture, reverb: { ...saved.reverb!, speed: { state: 'idle' } },
+    } });
+    await applySavedPreset(saved, capture, () => true, send);
+    expect(send.mock.calls[0][0]).toMatchObject({ type: 'APPLY_EFFECTS', reverb: saved.reverb });
+  });
   it('saves the complete settings, reloads, renames and updates explicitly, then deletes', async () => {
     const id = (await save())!;
     const [original] = (await listPresets()).presets;

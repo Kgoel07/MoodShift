@@ -36,7 +36,65 @@
     return { title: cleaned, artist: channelArtist };
   }
 
+  // extension/src/playback-speed.ts
+  var PlaybackSpeedLease = class {
+    set(owner, enabled, player) {
+      if (!enabled) {
+        this.release(owner);
+        if (this.blocked === owner) this.blocked = void 0;
+        return { state: "idle" };
+      }
+      if (this.blocked === owner) return { state: "unavailable", message: "Playback speed changed in the player. Reverb remains active." };
+      if (this.owned && (this.owned.owner !== owner || this.owned.player !== player)) this.release();
+      if (!player || !Number.isFinite(player.duration) || player.duration <= 0) {
+        this.release();
+        return { state: "unavailable", message: "Reverb active. Slowing is unavailable for this playback." };
+      }
+      if (this.owned && Math.abs(player.playbackRate - this.owned.applied) > 1e-3) {
+        this.blocked = owner;
+        this.release();
+        return { state: "unavailable", message: "Playback speed changed in the player. Reverb remains active." };
+      }
+      if (!this.owned) {
+        const original = player.playbackRate;
+        if (!Number.isFinite(original) || original < 0.5 || original > 2) return { state: "unavailable", message: "Reverb active. Use a player speed between 0.5\xD7 and 2\xD7 to enable slowing." };
+        this.owned = { owner, player, original, applied: original * 0.85 };
+        try {
+          player.playbackRate = this.owned.applied;
+          if (Math.abs(player.playbackRate - this.owned.applied) > 1e-3) throw new Error("Player rejected rate.");
+        } catch {
+          this.release();
+          return { state: "unavailable", message: "Reverb active. The player refused speed control." };
+        }
+      }
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => this.release(), 7e3);
+      return { state: "active", rate: player.playbackRate };
+    }
+    release(owner) {
+      if (owner && this.owned?.owner !== owner) return;
+      clearTimeout(this.timer);
+      const owned = this.owned;
+      this.owned = void 0;
+      if (owned && Math.abs(owned.player.playbackRate - owned.applied) < 1e-3) {
+        try {
+          owned.player.playbackRate = owned.original;
+        } catch {
+        }
+      }
+    }
+  };
+
   // extension/src/youtube-playback.ts
+  var reverbSpeed = new PlaybackSpeedLease();
+  chrome.runtime.onMessage.addListener((message, sender, reply) => {
+    if (message?.type !== "REVERB_PLAYBACK" || sender.id !== chrome.runtime.id) return;
+    if (typeof message.owner !== "string" || message.owner.length > 120 || typeof message.enabled !== "boolean") return;
+    const player = document.querySelector("#movie_player.ad-showing") ? void 0 : document.querySelector("#movie_player video.html5-main-video") ?? void 0;
+    reply(reverbSpeed.set(message.owner, message.enabled, player));
+  });
+  document.addEventListener("yt-navigate-start", () => reverbSpeed.release());
+  window.addEventListener("pagehide", () => reverbSpeed.release());
   var mediaEvents = [
     "timeupdate",
     "play",

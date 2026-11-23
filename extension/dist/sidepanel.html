@@ -81,6 +81,21 @@
     </section>
 
     <section id="advanced-panel" class="panel-page" role="tabpanel" aria-labelledby="advanced-tab" hidden>
+      <details id="audio-effects" open>
+        <summary>Audio Effects</summary>
+        <fieldset aria-label="Reverb controls" disabled>
+          <label class="reverb-enable"><input id="reverb-enabled" type="checkbox">Enable reverb</label>
+          <label for="reverb-preset">Reverb preset<select id="reverb-preset"></select></label>
+          <label for="effect-reverbMix">Reverb Amount<output id="reverb-amount-value" for="effect-reverbMix">0%</output>
+            <input id="effect-reverbMix" type="range" min="0" max="0.55" step="0.01" value="0">
+          </label>
+          <label for="reverb-duration">Reverb Duration<output id="reverb-duration-value" for="reverb-duration">2.4 s</output>
+            <input id="reverb-duration" type="range" min="0.4" max="4" step="0.1" value="2.4">
+          </label>
+        </fieldset>
+        <p class="setting-help">Reverb also applies in Original.</p>
+        <p id="reverb-status" class="setting-help" role="status"></p>
+      </details>
       <details id="effect-settings" open>
         <summary>Effect controls</summary>
         <fieldset id="controls" aria-label="Effect settings" disabled></fieldset>

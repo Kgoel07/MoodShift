@@ -5,6 +5,7 @@ import { mountSavedPresets } from './saved-presets-panel';
 import { applySavedPreset, type SavedPreset } from './saved-presets';
 import { mountPersonalization } from './personalization-panel';
 import { mountPanelTabs } from './panel-tabs';
+import { mountReverb } from './reverb-panel';
 import { explicitPreference } from './shared/preferences';
 import { meterChannel, toWorker, type MeterUpdate, type StatusChanged, type WorkerCommand } from './shared/messages';
 import { directStemIntent, parseInterpretation, silentFeatures, type AudioFeatures, type CaptureStatus, type MonitorMode, type StemMode } from './shared/types';
@@ -46,6 +47,9 @@ const personalization = mountPersonalization(document.querySelector<HTMLElement>
     feedback.textContent = 'Personalization changed. Submit the prompt again.';
   }
 });
+const reverb = mountReverb(document.querySelector<HTMLElement>('#audio-effects')!, patch => {
+  if (status.phase === 'capturing') void command({ type: 'SET_REVERB', sessionId: status.session.id, patch });
+}, cancelInterpretation);
 
 if (deployment.mode === 'production') {
   document.querySelector<HTMLElement>('#cloud-settings')!.hidden = false;
@@ -99,7 +103,7 @@ function displayValue(value: number, unit: string): string {
   return `${Number(value.toFixed(1))} ${unit}`;
 }
 
-const sliders = effectKeys.map(key => {
+const sliders = effectKeys.filter(key => key !== 'reverbMix').map(key => {
   const spec = effectSpecs[key];
   const label = document.createElement('label');
   const text = document.createElement('span');
@@ -186,6 +190,7 @@ function render(next: CaptureStatus): void {
   updateApply();
   stopButton.disabled = next.phase !== 'capturing' || stopping;
   const enabled = !stopButton.disabled && !presetApplying;
+  reverb.render(next, enabled);
   controls.disabled = !enabled;
   for (const button of presetGroup.querySelectorAll('button')) button.disabled = !enabled;
   for (const button of monitorButtons) {
@@ -266,7 +271,7 @@ async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, 
   commandPending = true;
   updateApply();
   refreshId++;
-  if (message.type === 'APPLY_EFFECTS' || message.type === 'SET_STEM') feedback.textContent = 'Applying…';
+  if (message.type === 'APPLY_EFFECTS' || message.type === 'SET_STEM' || message.type === 'SET_REVERB') feedback.textContent = 'Applying…';
   try {
     let reply = await toWorker(message);
     if (id !== commandId) return;
@@ -284,7 +289,7 @@ async function command(message: Exclude<WorkerCommand, { type: 'GET_STATUS' }>, 
     }
     refreshId++;
     render(reply.status);
-    if ((message.type === 'APPLY_EFFECTS' || message.type === 'SET_STEM')
+    if ((message.type === 'APPLY_EFFECTS' || message.type === 'SET_STEM' || message.type === 'SET_REVERB')
       && reply.status.phase === 'capturing' && reply.status.session.id === message.sessionId) {
       feedback.textContent = detail ? `Applied ✓ · ${detail}` : 'Applied ✓';
     }

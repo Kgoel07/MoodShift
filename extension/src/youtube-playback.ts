@@ -1,4 +1,16 @@
 import { identifySong, youtubePlaybackPort, youtubeVideoId, type YouTubePlayback } from './shared/lyrics';
+import { PlaybackSpeedLease } from './playback-speed';
+
+const reverbSpeed = new PlaybackSpeedLease();
+chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if (message?.type !== 'REVERB_PLAYBACK' || sender.id !== chrome.runtime.id) return;
+  if (typeof message.owner !== 'string' || message.owner.length > 120 || typeof message.enabled !== 'boolean') return;
+  const player = document.querySelector('#movie_player.ad-showing') ? undefined
+    : document.querySelector<HTMLVideoElement>('#movie_player video.html5-main-video') ?? undefined;
+  reply(reverbSpeed.set(message.owner, message.enabled, player));
+});
+document.addEventListener('yt-navigate-start', () => reverbSpeed.release());
+window.addEventListener('pagehide', () => reverbSpeed.release());
 
 const mediaEvents = ['timeupdate', 'play', 'pause', 'playing', 'seeking', 'seeked', 'ratechange',
   'durationchange', 'loadedmetadata', 'emptied', 'ended'] as const;

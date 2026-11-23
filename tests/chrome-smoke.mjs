@@ -5,6 +5,7 @@ import { rm, mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { parse } from 'dotenv';
+import { prepareReverb, checkReverb } from './reverb-browser.mjs';
 
 const testDir = resolve('.moodshift-test');
 await mkdir(testDir, { recursive: true });
@@ -31,8 +32,23 @@ if (stemPort || (cloudBuild && !localStemsWithCloudApi)) {
   extensionPath = isolatedPath;
 }
 const stemFixture = stemTest && !stemYouTube ? await readFile('.stem-gate/assets/fixture.ogg') : undefined;
+const reverb = process.env.MOODSHIFT_REVERB_TEST ? await prepareReverb() : undefined;
 let helper;
 const fixture = createServer((req, res) => {
+  if (reverb && req.url === '/reverb') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end('<title>Reverb local audio</title><audio controls loop src="/reverb-audio"></audio><script src="/reverb-dsp.js"></script>'); return;
+  }
+  if (reverb && req.url === '/reverb-dsp.js') { res.writeHead(200, { 'Content-Type': 'text/javascript' }); res.end(reverb.dsp); return; }
+  if (reverb && req.url === '/reverb-audio') {
+    const range = req.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
+    const start = range ? Number(range[1]) : 0;
+    const end = Math.min(reverb.audio.length - 1, range?.[2] ? Number(range[2]) : reverb.audio.length - 1);
+    const audio = reverb.audio.subarray(start, end + 1);
+    res.writeHead(range ? 206 : 200, { 'Content-Type': reverb.mime, 'Content-Length': audio.length, 'Accept-Ranges': 'bytes',
+      ...(range ? { 'Content-Range': `bytes ${start}-${end}/${reverb.audio.length}` } : {}) });
+    res.end(audio); return;
+  }
   if (req.url === '/stems.ogg' && stemFixture) {
     res.writeHead(200, { 'Content-Type': 'audio/ogg' });
     res.end(stemFixture);
@@ -139,11 +155,11 @@ async function until(read, accept, label, attempts = 24) {
 }
 
 async function startStemHelper(extensionId) {
-  const args = stemPort
+  const args = process.env.MOODSHIFT_REVERB_STEMS ? ['tests/reverb_stem_fixture.py', '--port', stemPort] : stemPort
     ? ['-c', 'import sys; from scripts import stem_helper as helper; helper.PORT = int(sys.argv.pop(1)); helper.main()', stemPort]
     : ['-m', 'scripts.stem_helper'];
   helper = spawn(process.env.MOODSHIFT_STEM_PYTHON ?? '.stem-gate/venv/Scripts/python.exe',
-    [...args, '--extension-id', extensionId, '--device', process.env.MOODSHIFT_STEM_DEVICE ?? '1'],
+    [...args, '--extension-id', extensionId, ...(process.env.MOODSHIFT_REVERB_STEMS ? [] : ['--device', process.env.MOODSHIFT_STEM_DEVICE ?? '1'])],
     { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let helperLog = '';
   helper.stdout.on('data', data => { helperLog += data.toString(); });
@@ -460,6 +476,10 @@ try {
   await until(async () => (await evaluate(sw, 'chrome.tabCapture.getCapturedTabs()'))
     .find(tab => tab.tabId === current.session.tabId)?.status, state => state === 'stopped', 'Tab capture released');
   console.log('Local tone, DSP controls, tab switching and Stop checks passed.');
+  if (reverb) {
+    assert.ok(!process.env.MOODSHIFT_REVERB_STEMS || stemPort, 'Reverb stem fixture requires an isolated MOODSHIFT_STEM_TEST_PORT');
+    await checkReverb({ send, evaluate, find, attach, until, url, origin, id, sw, read, startStemHelper, stopStemHelper });
+  }
   if (process.env.MOODSHIFT_CHORDS_TEST) {
     const songUrl = 'https://www.youtube.com/watch?v=PqJNc9KVIZE';
     const { targetId: songTab } = await send('Target.createTarget', { url: songUrl, forTab: true });

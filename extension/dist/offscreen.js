@@ -45,6 +45,151 @@
     "Clear Voice": Object.freeze({ ...neutralEffects, highpassHz: 100, bassDb: -2, trebleDb: 2 })
   };
 
+  // extension/src/shared/reverb.ts
+  var reverbPresets = {
+    dreamy: { label: "\u{1F319} Dreamy Reverb", amount: 0.28, duration: 2.4, preDelay: 0.012, toneHz: 3800 },
+    hall: { label: "\u{1F3DB}\uFE0F Concert Hall", amount: 0.24, duration: 2.8, preDelay: 0.028, toneHz: 6500 },
+    slowed: { label: "\u{1F327}\uFE0F Slowed + Reverb", amount: 0.34, duration: 3.4, preDelay: 0.018, toneHz: 2800 }
+  };
+  var reverbDuration = { min: 0.4, max: 4, step: 0.1 };
+  var defaultReverb = Object.freeze({ preset: "dreamy", duration: 2.4, lastAmount: 0.28 });
+  function bounded(value, min, max) {
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("Reverb values must be finite numbers.");
+    return Math.max(min, Math.min(max, value));
+  }
+  function validateReverb(input) {
+    const value = input;
+    if (!value || typeof value !== "object" || !Object.hasOwn(reverbPresets, value.preset) || Object.keys(value).some((key) => !["preset", "duration", "lastAmount"].includes(key))) throw new Error("Invalid reverb settings.");
+    return {
+      preset: value.preset,
+      duration: Math.round(bounded(value.duration, reverbDuration.min, reverbDuration.max) * 10) / 10,
+      lastAmount: bounded(value.lastAmount, 0, effectSpecs.reverbMix.max)
+    };
+  }
+  function changeReverb(current, mix, input) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Invalid reverb change.");
+    const patch = input;
+    if (Object.keys(patch).some((key) => !["preset", "duration", "enabled", "amount"].includes(key)) || patch.enabled !== void 0 && typeof patch.enabled !== "boolean") throw new Error("Invalid reverb change.");
+    let settings = { ...current };
+    if (patch.preset !== void 0) {
+      if (!Object.hasOwn(reverbPresets, patch.preset)) throw new Error("Unknown reverb preset.");
+      const preset = reverbPresets[patch.preset];
+      settings = { preset: patch.preset, duration: preset.duration, lastAmount: preset.amount };
+      mix = preset.amount;
+    }
+    if (patch.duration !== void 0) settings.duration = patch.duration;
+    if (patch.amount !== void 0) {
+      mix = bounded(patch.amount, 0, effectSpecs.reverbMix.max);
+      if (mix > 0) settings.lastAmount = mix;
+    }
+    if (patch.enabled === false) mix = 0;
+    if (patch.enabled === true && mix === 0) mix = settings.lastAmount || defaultReverb.lastAmount;
+    return { settings: validateReverb(settings), mix };
+  }
+
+  // extension/src/reverb.ts
+  function impulseSamples(rate, settings) {
+    const config = validateReverb(settings), preset = reverbPresets[config.preset];
+    const length = Math.ceil(rate * config.duration), start2 = Math.round(rate * preset.preDelay);
+    const response = [new Float32Array(length), new Float32Array(length)];
+    const coefficient = 1 - Math.exp(-2 * Math.PI * preset.toneHz / rate);
+    for (let channel = 0; channel < 2; channel++) {
+      let seed = 12345 + channel * 9817, filtered = 0, energy = 0;
+      const samples = response[channel];
+      for (let i = start2; i < length; i++) {
+        seed = Math.imul(seed, 1664525) + 1013904223 >>> 0;
+        filtered += coefficient * (seed / 2147483648 - 1 - filtered);
+        const time = (i - start2) / rate;
+        samples[i] = filtered * Math.exp(-6.91 * time / (config.duration - preset.preDelay)) * Math.min(1, time / 0.01);
+        energy += samples[i] ** 2;
+      }
+      const gain = 1 / Math.sqrt(Math.max(1e-8, energy));
+      for (let i = start2; i < length; i++) samples[i] *= gain;
+    }
+    return response;
+  }
+  var LocalReverb = class {
+    constructor(context, input, output) {
+      this.context = context;
+      this.input = input;
+      this.output = output;
+      this.dry = this.context.createGain();
+      this.cache = /* @__PURE__ */ new Map();
+      this.returns = /* @__PURE__ */ new Set();
+      this.key = "";
+      this.closed = false;
+      input.connect(this.dry).connect(output);
+    }
+    ramp(param, value) {
+      param.cancelAndHoldAtTime(this.context.currentTime);
+      param.linearRampToValueAtTime(value, this.context.currentTime + 0.3);
+    }
+    retire(branch) {
+      this.ramp(branch.gain.gain, 0);
+      clearTimeout(branch.timer);
+      branch.timer = setTimeout(() => {
+        this.input.disconnect(branch.convolver);
+        branch.convolver.disconnect();
+        branch.gain.disconnect();
+        this.returns.delete(branch);
+      }, 350);
+    }
+    update(settings, amount) {
+      if (this.closed) return;
+      const config = validateReverb(settings);
+      if (!Number.isFinite(amount) || amount < 0 || amount > effectSpecs.reverbMix.max) throw new Error("Invalid reverb amount.");
+      clearTimeout(this.pending);
+      this.ramp(this.dry.gain, Math.sqrt(1 - amount));
+      if (!amount) {
+        if (this.active) this.retire(this.active);
+        this.active = void 0;
+        this.key = "";
+        return;
+      }
+      const key = `${config.preset}:${config.duration}`;
+      if (key === this.key && this.active) {
+        this.ramp(this.active.gain.gain, Math.sqrt(amount) * 0.8);
+        return;
+      }
+      this.pending = setTimeout(() => {
+        if (this.closed) return;
+        let buffer = this.cache.get(key);
+        if (!buffer) {
+          const channels = impulseSamples(this.context.sampleRate, config);
+          buffer = this.context.createBuffer(2, channels[0].length, this.context.sampleRate);
+          channels.forEach((samples, channel) => buffer.getChannelData(channel).set(samples));
+        }
+        this.cache.delete(key);
+        this.cache.set(key, buffer);
+        if (this.cache.size > 4) this.cache.delete(this.cache.keys().next().value);
+        const convolver = this.context.createConvolver(), gain = this.context.createGain();
+        convolver.normalize = false;
+        convolver.buffer = buffer;
+        gain.gain.value = 0;
+        this.input.connect(convolver).connect(gain).connect(this.output);
+        if (this.active) this.retire(this.active);
+        this.active = { convolver, gain };
+        this.returns.add(this.active);
+        this.key = key;
+        this.ramp(gain.gain, Math.sqrt(amount) * 0.8);
+      }, 80);
+    }
+    disconnect() {
+      this.closed = true;
+      clearTimeout(this.pending);
+      this.input.disconnect(this.dry);
+      this.dry.disconnect();
+      for (const branch of this.returns) {
+        clearTimeout(branch.timer);
+        this.input.disconnect(branch.convolver);
+        branch.convolver.disconnect();
+        branch.gain.disconnect();
+      }
+      this.returns.clear();
+      this.cache.clear();
+    }
+  };
+
   // extension/src/audio-engine.ts
   var timeConstant = 0.075;
   var dbToGain = (db) => 10 ** (db / 20);
@@ -58,6 +203,9 @@
       this.original = this.gain(0);
       this.modified = this.gain(1);
       this.master = this.gain(1);
+      this.monitorOut = this.gain(1);
+      this.reverb = new LocalReverb(this.context, this.monitorOut, this.master);
+      this.reverbSettings = { ...defaultReverb };
       this.fullInput = this.gain(1);
       this.stemInput = this.gain(0);
       this.activeStem = false;
@@ -78,15 +226,13 @@
       this.distortionWet = this.gain(0);
       this.effectsInput = this.gain(1);
       this.spaceDry = this.gain(1);
-      this.reverbSend = this.gain(0);
-      this.reverbReturn = this.gain(0);
       this.delaySend = this.gain(0);
       this.delayReturn = this.gain(0);
       this.delay = this.track(this.context.createDelay(0.5));
       this.feedback = this.gain(0);
       this.effects = neutralEffects;
       this.source.connect(this.analyser);
-      this.source.connect(this.original).connect(this.master);
+      this.source.connect(this.original).connect(this.monitorOut);
       const limiter = this.track(context.createDynamicsCompressor());
       limiter.threshold.value = -3;
       limiter.knee.value = 0;
@@ -110,14 +256,11 @@
       shaper.oversample = "2x";
       this.lowpassOut.connect(this.distortionDry).connect(this.effectsInput);
       this.lowpassOut.connect(shaper).connect(this.distortionWet).connect(this.effectsInput);
-      const convolver = this.track(context.createConvolver());
-      convolver.buffer = this.impulseResponse();
       this.effectsInput.connect(this.spaceDry).connect(this.outputGain);
-      this.effectsInput.connect(this.reverbSend).connect(convolver).connect(this.reverbReturn).connect(this.outputGain);
       this.delay.delayTime.value = 0.01;
       this.effectsInput.connect(this.delaySend).connect(this.delay).connect(this.delayReturn).connect(this.outputGain);
       this.delay.connect(this.feedback).connect(this.delay);
-      this.outputGain.connect(this.modified).connect(this.master);
+      this.outputGain.connect(this.modified).connect(this.monitorOut);
     }
     track(node) {
       this.nodes.push(node);
@@ -135,16 +278,9 @@
       node.Q.value = -3;
       return node;
     }
-    impulseResponse() {
-      const frames = Math.ceil(this.context.sampleRate * 1.5);
-      const buffer = this.context.createBuffer(2, frames, this.context.sampleRate);
-      for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
-        const samples = buffer.getChannelData(channel);
-        for (let index = 0; index < frames; index++) {
-          samples[index] = (2 * Math.random() - 1) * (1 - index / frames) ** 3;
-        }
-      }
-      return buffer;
+    setReverb(settings) {
+      this.reverbSettings = settings;
+      this.reverb.update(settings, this.effects.reverbMix);
     }
     ramp(param, value) {
       const now = this.context.currentTime;
@@ -209,16 +345,13 @@
       if (oldEcho !== echo || next.delayFeedback !== previous.delayFeedback) {
         this.ramp(this.feedback.gain, echo > 0 ? next.delayFeedback : 0);
       }
-      if (oldEcho !== echo || previous.reverbMix !== next.reverbMix) {
-        const dry = (1 - next.reverbMix) * (1 - echo);
-        const echoWet = echo * (1 - next.reverbMix);
-        this.ramp(this.spaceDry.gain, dry);
-        this.ramp(this.reverbReturn.gain, next.reverbMix);
-        this.ramp(this.reverbSend.gain, next.reverbMix > 0 ? 1 : 0);
-        this.ramp(this.delayReturn.gain, echoWet * (1 - next.delayFeedback));
+      if (previous.reverbMix !== next.reverbMix) this.reverb.update(this.reverbSettings, next.reverbMix);
+      if (oldEcho !== echo) {
+        this.ramp(this.spaceDry.gain, 1 - echo);
+        this.ramp(this.delayReturn.gain, echo * (1 - next.delayFeedback));
         this.ramp(this.delaySend.gain, echo > 0 ? 1 : 0);
       } else if (next.delayFeedback !== previous.delayFeedback && echo > 0) {
-        this.ramp(this.delayReturn.gain, echo * (1 - next.reverbMix) * (1 - next.delayFeedback));
+        this.ramp(this.delayReturn.gain, echo * (1 - next.delayFeedback));
       }
       if (previous.outputGainDb !== next.outputGainDb) this.ramp(this.outputGain.gain, dbToGain(next.outputGainDb));
       this.effects = next;
@@ -230,6 +363,7 @@
       this.ramp(wet.gain, active ? 1 : 0);
     }
     disconnect() {
+      this.reverb.disconnect();
       this.nodes.forEach((node) => node.disconnect());
     }
   };
@@ -479,21 +613,81 @@
   var meterUpdates = new BroadcastChannel(meterChannel);
   function read() {
     if (live) {
-      const { session, effects, revision, monitor, features, context, stem } = live;
-      return { phase: "capturing", session, effects, revision, monitor, features, stem, outputPaused: context.state !== "running" };
+      const { session, effects, revision, monitor, features, context, stem, reverb } = live;
+      return { phase: "capturing", session, effects, revision, monitor, features, stem, reverb, outputPaused: context.state !== "running" };
     }
     return problem ? { phase: "error", message: problem } : { phase: "ready" };
   }
   async function stop(sessionId, error) {
     if (live?.session.id !== sessionId) return;
     const { engine, stream, context, timer, stemStream } = live;
+    const capture = live;
     live = void 0;
+    const restoring = releaseSpeed(capture);
     problem = error;
     clearInterval(timer);
     stemStream?.close();
     engine?.disconnect();
     stream.getTracks().forEach((track) => track.stop());
     if (context.state !== "closed") await context.close();
+    await restoring;
+  }
+  async function releaseSpeed(capture) {
+    clearInterval(capture.speedTimer);
+    capture.speedTimer = void 0;
+    const owner = capture.speedOwner;
+    capture.speedOwner = void 0;
+    capture.reverb.speed = { state: "idle" };
+    if (owner) await chrome.runtime.sendMessage({
+      target: "worker",
+      type: "SYNC_REVERB_RATE",
+      sessionId: capture.session.id,
+      owner,
+      enabled: false
+    }).catch(() => void 0);
+  }
+  async function syncSpeed(capture, restart = false) {
+    if (capture.effects.reverbMix === 0 || capture.reverb.preset !== "slowed") {
+      await releaseSpeed(capture);
+      return;
+    }
+    if (restart) await releaseSpeed(capture);
+    if (capture.speedOwner) return;
+    const owner = capture.speedOwner = crypto.randomUUID();
+    const renew = async () => {
+      let speed;
+      try {
+        speed = await chrome.runtime.sendMessage({
+          target: "worker",
+          type: "SYNC_REVERB_RATE",
+          sessionId: capture.session.id,
+          owner,
+          enabled: true
+        });
+        if (!speed || !["active", "unavailable"].includes(speed.state) || speed.state === "active" && (typeof speed.rate !== "number" || !Number.isFinite(speed.rate) || speed.rate <= 0)) throw new Error("Invalid speed acknowledgment.");
+      } catch {
+        speed = { state: "unavailable", message: "Reverb active. Playback slowing is unavailable." };
+      }
+      if (live !== capture || capture.speedOwner !== owner) return;
+      capture.reverb.speed = speed;
+      if (speed.state !== "active") {
+        clearInterval(capture.speedTimer);
+        capture.speedTimer = void 0;
+      }
+      statusChanged();
+    };
+    await renew();
+    if (live === capture && capture.speedOwner === owner && capture.reverb.speed.state === "active") {
+      capture.speedTimer = setInterval(() => void renew(), 2e3);
+    }
+  }
+  async function applyReverb(capture, settings, effects, restart = false) {
+    capture.engine.setReverb(settings);
+    capture.engine.setEffects(effects);
+    capture.effects = effects;
+    capture.reverb = { ...settings, lastAmount: effects.reverbMix || settings.lastAmount, speed: capture.reverb.speed };
+    capture.revision++;
+    await syncSpeed(capture, restart);
   }
   function queue(work) {
     const next = pending.then(work);
@@ -545,7 +739,8 @@
         revision: 0,
         features: silentFeatures,
         stem: { phase: "idle", mode: "full" },
-        stemRequest: 0
+        stemRequest: 0,
+        reverb: { ...defaultReverb, speed: { state: "idle" } }
       };
       live = capture;
       live.engine = new AudioEngine(context, stream);
@@ -674,19 +869,22 @@
     void queue(async () => {
       if (message.type === "START") await start(message.session, message.streamId);
       if (message.type === "STOP") await stop(message.sessionId);
-      if (message.type === "APPLY_EFFECTS" || message.type === "SET_MONITOR" || message.type === "UPDATE_TAB") {
+      if (message.type === "APPLY_EFFECTS" || message.type === "SET_MONITOR" || message.type === "UPDATE_TAB" || message.type === "SET_REVERB") {
         const capture = live;
         if (!capture?.engine || capture.session.id !== message.sessionId) {
           return { ok: false, message: "The selected tab changed. Try again on the current source." };
         }
-        if (message.type === "APPLY_EFFECTS") {
+        if (message.type === "SET_REVERB") {
+          const { preset, duration, lastAmount } = capture.reverb;
+          const next = changeReverb({ preset, duration, lastAmount }, capture.effects.reverbMix, message.patch);
+          await applyReverb(capture, next.settings, applyPatch(capture.effects, { reverbMix: next.mix }), message.patch.preset !== void 0 || message.patch.enabled === true);
+        } else if (message.type === "APPLY_EFFECTS") {
           if (message.baseRevision !== void 0 && message.baseRevision !== capture.revision) {
             return { ok: false, message: "Effects changed while Gemini was interpreting. Submit again to use the current settings." };
           }
           const next = applyPatch(capture.effects, message.patch);
-          capture.engine.setEffects(next);
-          capture.effects = next;
-          capture.revision++;
+          const { preset, duration, lastAmount } = capture.reverb;
+          await applyReverb(capture, message.reverb ? validateReverb(message.reverb) : { preset, duration, lastAmount }, next, message.reverb !== void 0);
         } else if (message.type === "SET_MONITOR") {
           if (message.baseRevision !== void 0 && message.baseRevision !== capture.revision) {
             return { ok: false, message: "Effects changed before switching the monitor." };

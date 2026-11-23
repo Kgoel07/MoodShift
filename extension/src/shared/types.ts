@@ -1,4 +1,5 @@
 import { clampPatch, effectKeys, type AudioEffectState, type EffectPatch } from './effects.js';
+import type { ReverbState } from './reverb';
 
 export interface SourceTab {
   tabId: number;
@@ -17,6 +18,7 @@ export type CaptureStatus =
       phase: 'capturing';
       session: CaptureSession;
       effects: AudioEffectState;
+      reverb?: ReverbState;
       revision: number;
       monitor: MonitorMode;
       stem: StemStatus;

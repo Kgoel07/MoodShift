@@ -1,7 +1,9 @@
 import type { AudioFeatures, CaptureSession, CaptureStatus, MonitorMode, StemMode } from './types';
 import type { EffectPatch } from './effects';
+import type { ReverbPatch, ReverbSettings } from './reverb';
 
-type EffectChange = { type: 'APPLY_EFFECTS'; sessionId: string; patch: EffectPatch; baseRevision?: number };
+type EffectChange = { type: 'APPLY_EFFECTS'; sessionId: string; patch: EffectPatch; baseRevision?: number; reverb?: ReverbSettings };
+type ReverbChange = { type: 'SET_REVERB'; sessionId: string; patch: ReverbPatch };
 type MonitorChange = { type: 'SET_MONITOR'; sessionId: string; monitor: MonitorMode; baseRevision?: number };
 type StemChange = { type: 'SET_STEM'; sessionId: string; mode: StemMode; baseRevision?: number };
 
@@ -9,6 +11,7 @@ export type WorkerCommand =
   | { type: 'GET_STATUS' }
   | { type: 'STOP'; sessionId: string }
   | EffectChange
+  | ReverbChange
   | MonitorChange
   | StemChange;
 export type AudioCommand =
@@ -17,6 +20,7 @@ export type AudioCommand =
   | { type: 'STOP'; sessionId: string }
   | { type: 'UPDATE_TAB'; sessionId: string; title?: string; muted?: boolean }
   | EffectChange
+  | ReverbChange
   | MonitorChange
   | StemChange;
 

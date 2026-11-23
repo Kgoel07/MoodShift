@@ -622,6 +622,28 @@
     return chrome.runtime.sendMessage({ ...command2, target: "worker" });
   }
 
+  // extension/src/shared/reverb.ts
+  var reverbPresets = {
+    dreamy: { label: "\u{1F319} Dreamy Reverb", amount: 0.28, duration: 2.4, preDelay: 0.012, toneHz: 3800 },
+    hall: { label: "\u{1F3DB}\uFE0F Concert Hall", amount: 0.24, duration: 2.8, preDelay: 0.028, toneHz: 6500 },
+    slowed: { label: "\u{1F327}\uFE0F Slowed + Reverb", amount: 0.34, duration: 3.4, preDelay: 0.018, toneHz: 2800 }
+  };
+  var reverbDuration = { min: 0.4, max: 4, step: 0.1 };
+  var defaultReverb = Object.freeze({ preset: "dreamy", duration: 2.4, lastAmount: 0.28 });
+  function bounded(value, min, max) {
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("Reverb values must be finite numbers.");
+    return Math.max(min, Math.min(max, value));
+  }
+  function validateReverb(input) {
+    const value = input;
+    if (!value || typeof value !== "object" || !Object.hasOwn(reverbPresets, value.preset) || Object.keys(value).some((key) => !["preset", "duration", "lastAmount"].includes(key))) throw new Error("Invalid reverb settings.");
+    return {
+      preset: value.preset,
+      duration: Math.round(bounded(value.duration, reverbDuration.min, reverbDuration.max) * 10) / 10,
+      lastAmount: bounded(value.lastAmount, 0, effectSpecs.reverbMix.max)
+    };
+  }
+
   // extension/src/saved-presets.ts
   var savedPresetsKey = "moodshiftSavedPresets";
   function details(name, description) {
@@ -648,7 +670,8 @@
       ...details(preset.name, preset.description),
       audioSettings: clampEffects(preset.audioSettings),
       stemMode: preset.stemMode,
-      monitor: preset.monitor
+      monitor: preset.monitor,
+      ...preset.reverb === void 0 ? {} : { reverb: validateReverb(preset.reverb) }
     };
   }
   function storedPreset(value) {
@@ -662,7 +685,13 @@
     if (capture.stem.phase === "loading" || capture.stem.phase === "buffering") {
       throw new Error("Wait for stem selection to finish before saving.");
     }
-    return { audioSettings: capture.effects, stemMode: capture.stem.mode, monitor: capture.monitor };
+    const reverb2 = capture.reverb;
+    return {
+      audioSettings: capture.effects,
+      stemMode: capture.stem.mode,
+      monitor: capture.monitor,
+      ...reverb2 ? { reverb: { preset: reverb2.preset, duration: reverb2.duration, lastAmount: reverb2.lastAmount } } : {}
+    };
   }
   async function read() {
     const data = (await chrome.storage.local.get(savedPresetsKey))[savedPresetsKey];
@@ -726,9 +755,10 @@
       type: "APPLY_EFFECTS",
       sessionId,
       patch: preset.audioSettings,
-      baseRevision: capture.revision
+      baseRevision: capture.revision,
+      ...preset.reverb ? { reverb: preset.reverb } : {}
     }));
-    const matches = () => effectKeys.every((key) => status2.effects[key] === preset.audioSettings[key]);
+    const matches = () => effectKeys.every((key) => status2.effects[key] === preset.audioSettings[key]) && (!preset.reverb || status2.reverb && status2.reverb.preset === preset.reverb.preset && status2.reverb.duration === preset.reverb.duration && status2.reverb.lastAmount === preset.reverb.lastAmount);
     if (!matches()) throw new Error("Audio settings changed during preset application.");
     let limitation;
     if (status2.stem.mode !== preset.stemMode || preset.stemMode !== "full" && status2.stem.phase !== "active") {
@@ -1296,6 +1326,70 @@
     select(localStorage.getItem(tabKey) === "advanced" ? 1 : 0);
   }
 
+  // extension/src/reverb-panel.ts
+  function mountReverb(root, change, editing) {
+    const controls2 = root.querySelector("fieldset");
+    const enabled = root.querySelector("#reverb-enabled");
+    const preset = root.querySelector("#reverb-preset");
+    const amount = root.querySelector("#effect-reverbMix");
+    const duration = root.querySelector("#reverb-duration");
+    const amountLabel = root.querySelector("#reverb-amount-value");
+    const durationLabel = root.querySelector("#reverb-duration-value");
+    const notice = root.querySelector("[role=status]");
+    let durationEditing = false;
+    let sessionId;
+    amount.max = String(effectSpecs.reverbMix.max);
+    duration.min = String(reverbDuration.min);
+    duration.max = String(reverbDuration.max);
+    duration.step = String(reverbDuration.step);
+    for (const [key, definition] of Object.entries(reverbPresets)) preset.add(new Option(definition.label, key));
+    enabled.addEventListener("change", () => {
+      editing();
+      change({ enabled: enabled.checked });
+    });
+    preset.addEventListener("change", () => {
+      editing();
+      change({ preset: preset.value });
+    });
+    amount.addEventListener("input", () => {
+      editing();
+      amountLabel.value = `${Math.round(amount.valueAsNumber * 100)}%`;
+      change({ amount: amount.valueAsNumber });
+    });
+    duration.addEventListener("input", () => {
+      editing();
+      durationEditing = true;
+      durationLabel.value = `${duration.valueAsNumber.toFixed(1)} s`;
+    });
+    duration.addEventListener("change", () => {
+      editing();
+      durationEditing = false;
+      change({ duration: duration.valueAsNumber });
+    });
+    return {
+      render(status2, ready) {
+        controls2.disabled = !ready;
+        const capture = status2.phase === "capturing" ? status2 : void 0;
+        if (capture?.session.id !== sessionId) {
+          durationEditing = false;
+          sessionId = capture?.session.id;
+        }
+        const settings = capture?.reverb ?? defaultReverb;
+        const mix = capture?.effects.reverbMix ?? 0;
+        enabled.checked = mix > 0;
+        preset.value = settings.preset;
+        amount.value = String(mix);
+        amountLabel.value = `${Math.round(mix * 100)}%`;
+        if (!durationEditing) {
+          duration.value = String(settings.duration);
+          durationLabel.value = `${settings.duration.toFixed(1)} s`;
+        }
+        const speed = capture?.reverb?.speed;
+        notice.textContent = mix > 0 && settings.preset === "slowed" ? speed?.state === "active" ? `Playback slowed to ${Number(speed.rate.toFixed(2))}\xD7` : speed?.message ?? "Reverb active. Playback slowing is unavailable." : "";
+      }
+    };
+  }
+
   // extension/src/shared/types.ts
   var stemModes = ["full", "instrumental", "vocals"];
   var silentFeatures = Object.freeze({
@@ -1379,6 +1473,9 @@
       feedback.textContent = "Personalization changed. Submit the prompt again.";
     }
   });
+  var reverb = mountReverb(document.querySelector("#audio-effects"), (patch) => {
+    if (status.phase === "capturing") void command({ type: "SET_REVERB", sessionId: status.session.id, patch });
+  }, cancelInterpretation);
   if (deployment.mode === "production") {
     document.querySelector("#cloud-settings").hidden = false;
     document.querySelector("#cloud-stem-note").hidden = !usesCloudStems();
@@ -1421,7 +1518,7 @@
     if (unit === "%") return `${Math.round(value * 100)}%`;
     return `${Number(value.toFixed(1))} ${unit}`;
   }
-  var sliders = effectKeys.map((key) => {
+  var sliders = effectKeys.filter((key) => key !== "reverbMix").map((key) => {
     const spec = effectSpecs[key];
     const label = document.createElement("label");
     const text = document.createElement("span");
@@ -1501,6 +1598,7 @@
     updateApply();
     stopButton.disabled = next.phase !== "capturing" || stopping;
     const enabled = !stopButton.disabled && !presetApplying;
+    reverb.render(next, enabled);
     controls.disabled = !enabled;
     for (const button of presetGroup.querySelectorAll("button")) button.disabled = !enabled;
     for (const button of monitorButtons) {
@@ -1589,7 +1687,7 @@
     commandPending = true;
     updateApply();
     refreshId++;
-    if (message.type === "APPLY_EFFECTS" || message.type === "SET_STEM") feedback.textContent = "Applying\u2026";
+    if (message.type === "APPLY_EFFECTS" || message.type === "SET_STEM" || message.type === "SET_REVERB") feedback.textContent = "Applying\u2026";
     try {
       let reply = await toWorker(message);
       if (id !== commandId) return;
@@ -1610,7 +1708,7 @@
       }
       refreshId++;
       render(reply.status);
-      if ((message.type === "APPLY_EFFECTS" || message.type === "SET_STEM") && reply.status.phase === "capturing" && reply.status.session.id === message.sessionId) {
+      if ((message.type === "APPLY_EFFECTS" || message.type === "SET_STEM" || message.type === "SET_REVERB") && reply.status.phase === "capturing" && reply.status.session.id === message.sessionId) {
         feedback.textContent = detail ? `Applied \u2713 \xB7 ${detail}` : "Applied \u2713";
       }
     } catch (error) {

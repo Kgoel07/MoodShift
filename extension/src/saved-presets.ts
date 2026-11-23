@@ -1,6 +1,7 @@
 import { clampEffects, effectKeys, type AudioEffectState } from './shared/effects';
 import { toWorker } from './shared/messages';
 import type { CaptureStatus, MonitorMode, StemMode } from './shared/types';
+import { validateReverb, type ReverbSettings } from './shared/reverb';
 
 type Capture = Extract<CaptureStatus, { phase: 'capturing' }>;
 export interface SavedPreset {
@@ -13,6 +14,7 @@ export interface SavedPreset {
   audioSettings: AudioEffectState;
   stemMode: StemMode;
   monitor: MonitorMode;
+  reverb?: ReverbSettings;
 }
 
 export const savedPresetsKey = 'moodshiftSavedPresets';
@@ -43,6 +45,7 @@ export function validatePreset(value: unknown): SavedPreset {
     schemaVersion: 1, id: preset.id, createdAt: preset.createdAt, updatedAt: preset.updatedAt,
     ...details(preset.name, preset.description), audioSettings: clampEffects(preset.audioSettings),
     stemMode: preset.stemMode, monitor: preset.monitor,
+    ...(preset.reverb === undefined ? {} : { reverb: validateReverb(preset.reverb) }),
   };
 }
 
@@ -54,7 +57,9 @@ function snapshot(capture: Capture) {
   if (capture.stem.phase === 'loading' || capture.stem.phase === 'buffering') {
     throw new Error('Wait for stem selection to finish before saving.');
   }
-  return { audioSettings: capture.effects, stemMode: capture.stem.mode, monitor: capture.monitor };
+  const reverb = capture.reverb;
+  return { audioSettings: capture.effects, stemMode: capture.stem.mode, monitor: capture.monitor,
+    ...(reverb ? { reverb: { preset: reverb.preset, duration: reverb.duration, lastAmount: reverb.lastAmount } } : {}) };
 }
 
 async function read(): Promise<unknown[]> {
@@ -119,8 +124,11 @@ export async function applySavedPreset(input: SavedPreset, capture: Capture, cur
   };
   let status = requireCapture(await send({
     type: 'APPLY_EFFECTS', sessionId, patch: preset.audioSettings, baseRevision: capture.revision,
+    ...(preset.reverb ? { reverb: preset.reverb } : {}),
   }));
-  const matches = () => effectKeys.every(key => status.effects[key] === preset.audioSettings[key]);
+  const matches = () => effectKeys.every(key => status.effects[key] === preset.audioSettings[key])
+    && (!preset.reverb || (status.reverb && status.reverb.preset === preset.reverb.preset
+      && status.reverb.duration === preset.reverb.duration && status.reverb.lastAmount === preset.reverb.lastAmount));
   if (!matches()) throw new Error('Audio settings changed during preset application.');
   let limitation: string | undefined;
   if (status.stem.mode !== preset.stemMode

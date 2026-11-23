@@ -11,7 +11,13 @@ MoodShift applies live EQ, filters, reverb, echo, and distortion to one selected
 5. In Chrome, open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and choose `extension/dist`. Pin MoodShift from Chrome’s Extensions menu for quick access.
 6. Play authorized audio on YouTube. Click the MoodShift icon **from the playing tab** and look for its title and signal in the side panel. Try **Dreamy**, then a prompt such as “Make it warmer and more dreamy.” Press Enter or click **Apply**. Shift+Enter adds a line break. Try **Original**, **Modified**, then **Stop processing**.
 
-Open the panel from Chrome’s side panel menu to inspect the existing session. Use the toolbar icon on a different source tab to switch capture. **Reset** restores neutral values for the current session. Select **Modified** to hear the effects after comparing with Original.
+Open the panel from Chrome’s side panel menu to inspect the existing session. Use the toolbar icon on a different source tab to switch capture. **Reset** restores neutral values for the current session. Original bypasses EQ and the other DSP controls; the independently enabled reverb applies in both monitor positions.
+
+## Reverb without a stem worker
+
+Open **Advanced → Audio Effects** and choose **Dreamy Reverb**, **Concert Hall**, or **Slowed + Reverb**. Adjust **Reverb Amount** and **Reverb Duration**, or turn reverb off. It runs locally on the captured audio without a proxy, GPU or separation buffer, and also works on the selected Instrumental/Vocals output when a stem worker is available. My Presets saves customized reverb settings while preserving existing presets.
+
+Slowed + Reverb uses 85% of the previous playback speed on supported YouTube watch pages and restores it when disabled, stopped, or switched to another source. Reload an already-open YouTube page after updating the extension. Other sources keep the reverb and explicitly report that slowing is unavailable. Reverb also applies in Original; turn reverb off for a dry comparison. [Controls, limitations, implementation and Chrome tests](docs/REVERB_AUDIO_EFFECTS.md)
 
 ## Synchronized YouTube lyrics
 

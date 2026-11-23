@@ -141,8 +141,26 @@ chrome.tabCapture.onStatusChanged.addListener(({ status: captureState, tabId }) 
 
 chrome.runtime.onMessage.addListener((message: WorkerMessage | StemCodeRequest | {
   target: 'worker'; type: 'AUDIO_ENDED'; sessionId: string;
+} | {
+  target: 'worker'; type: 'SYNC_REVERB_RATE'; sessionId: string; owner: string; enabled: boolean;
 }, sender, sendResponse) => {
   if (message.target !== 'worker') return;
+  if (message.type === 'SYNC_REVERB_RATE') {
+    if (sender.url !== offscreenUrl || sender.id !== chrome.runtime.id) return;
+    void (async () => {
+      const stored = await chrome.storage.session.get('capture');
+      const capture = stored.capture as { id: string; tabId: number } | undefined;
+      if (capture?.id !== message.sessionId) return { state: 'unavailable', message: 'Reverb active. The captured tab changed.' };
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          chrome.tabs.sendMessage(capture.tabId, { type: 'REVERB_PLAYBACK', owner: message.owner, enabled: message.enabled }, { frameId: 0 }),
+          new Promise(resolve => { timeout = setTimeout(() => resolve({ state: 'unavailable', message: 'Reverb active. The player did not answer the speed request.' }), 1200); }),
+        ]);
+      } finally { clearTimeout(timeout); }
+    })().then(sendResponse, () => sendResponse({ state: 'unavailable', message: 'Reverb active. Slowing is supported on YouTube only.' }));
+    return true;
+  }
   if (message.type === 'GET_STEM_CODE') {
     if (!usesCloudStems() || sender.id !== chrome.runtime.id || sender.url !== offscreenUrl) {
       sendResponse({ ok: false, message: 'Cloud stem authentication is unavailable.' } satisfies StemCodeReply);
@@ -170,7 +188,7 @@ chrome.runtime.onMessage.addListener((message: WorkerMessage | StemCodeRequest |
         statusChanged();
         return { ok: true, status: current };
       }
-      if (message.type !== 'APPLY_EFFECTS' && message.type !== 'SET_MONITOR') {
+      if (message.type !== 'APPLY_EFFECTS' && message.type !== 'SET_MONITOR' && message.type !== 'SET_REVERB') {
         return { ok: false, message: 'Unknown audio command.' };
       }
       if (!await hasOffscreen()) return { ok: false, message: 'Select an audio tab with the MoodShift icon.' };
